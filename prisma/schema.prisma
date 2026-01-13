@@ -13,7 +13,7 @@ enum UserStatus {
 
 enum OrderStatus {
   DRAFT
-  PENDING_PAYMENT
+  OPEN
   PAID
   CANCELED
 }
@@ -57,6 +57,8 @@ model User {
   tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   roles         UserRole[]
   refreshTokens RefreshToken[]
+
+  orderStatusChanges OrderStatusHistory[] @relation("OrderStatusChangedBy")
 
   @@unique([tenantId, email])
   @@index([email])
@@ -102,35 +104,66 @@ model Product {
 }
 
 model Order {
-  id           String      @id @default(cuid())
-  tenantId     String
-  customerName String
-  status       OrderStatus @default(DRAFT)
-  totalCents   Int         @default(0)
-  createdAt    DateTime    @default(now())
+  id       String      @id @default(cuid())
+  tenantId String
+  number   Int
+  status   OrderStatus @default(DRAFT)
 
-  tenant   Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  items    OrderItem[]
+  subtotalCents Int @default(0)
+  totalCents    Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+
   payments Payment[]
 
-  @@index([tenantId])
-  @@index([status])
+  @@unique([tenantId, number])
+  @@index([tenantId, status])
   @@index([createdAt])
 }
 
 model OrderItem {
-  id             String @id @default(cuid())
-  orderId        String
+  id       String @id @default(cuid())
+  orderId  String
+  tenantId String
+
   productId      String
+  productName    String
   qty            Int
   unitPriceCents Int
   lineTotalCents Int
 
+  createdAt DateTime @default(now())
+
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id])
 
   @@index([orderId])
+  @@index([tenantId])
   @@index([productId])
+}
+
+model OrderStatusHistory {
+  id       String @id @default(cuid())
+  orderId  String
+  tenantId String
+
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+
+  changedByUserId String
+  createdAt       DateTime @default(now())
+
+  order         Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedByUser User  @relation("OrderStatusChangedBy", fields: [changedByUserId], references: [id])
+
+  @@index([orderId])
+  @@index([tenantId])
+  @@index([createdAt])
 }
 
 model Payment {
