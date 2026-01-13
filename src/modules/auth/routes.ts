@@ -143,7 +143,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 	app.post("/auth/refresh", async (req) => {
 		const body = RefreshBody.parse(req.body);
 
-		let payload;
+		let payload: { tokenId: string };
 		try {
 			payload = verifyRefreshToken(body.refreshToken);
 		} catch {
@@ -224,7 +224,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 	app.post("/auth/logout", async (req) => {
 		const body = RefreshBody.parse(req.body);
 
-		let payload;
+		let payload: { tokenId: string };
 		try {
 			payload = verifyRefreshToken(body.refreshToken);
 		} catch {
