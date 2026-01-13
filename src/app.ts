@@ -55,11 +55,13 @@ export function buildApp() {
 
     app.register(prismaPlugin);
     app.register(redisPlugin);
-    app.register(healthRoutes);
+
+    app.register(authPlugin);     // antes de rutas protegidas
+    app.register(authRoutes);
 
     app.register(productsRoutes);
-    app.register(authPlugin);
-    app.register(authRoutes);
+
+    app.register(healthRoutes);
 
     return app;
 }
