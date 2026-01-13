@@ -2,7 +2,7 @@
 CREATE TYPE "UserStatus" AS ENUM ('ACTIVE', 'DISABLED');
 
 -- CreateEnum
-CREATE TYPE "OrderStatus" AS ENUM ('DRAFT', 'PENDING_PAYMENT', 'PAID', 'CANCELED');
+CREATE TYPE "OrderStatus" AS ENUM ('DRAFT', 'OPEN', 'PAID', 'CANCELED');
 
 -- CreateEnum
 CREATE TYPE "PaymentStatus" AS ENUM ('PENDING', 'SUCCEEDED', 'FAILED');
@@ -68,10 +68,12 @@ CREATE TABLE "Product" (
 CREATE TABLE "Order" (
     "id" TEXT NOT NULL,
     "tenantId" TEXT NOT NULL,
-    "customerName" TEXT NOT NULL,
+    "number" INTEGER NOT NULL,
     "status" "OrderStatus" NOT NULL DEFAULT 'DRAFT',
+    "subtotalCents" INTEGER NOT NULL DEFAULT 0,
     "totalCents" INTEGER NOT NULL DEFAULT 0,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Order_pkey" PRIMARY KEY ("id")
 );
@@ -80,12 +82,28 @@ CREATE TABLE "Order" (
 CREATE TABLE "OrderItem" (
     "id" TEXT NOT NULL,
     "orderId" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
     "productId" TEXT NOT NULL,
+    "productName" TEXT NOT NULL,
     "qty" INTEGER NOT NULL,
     "unitPriceCents" INTEGER NOT NULL,
     "lineTotalCents" INTEGER NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "OrderItem_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "OrderStatusHistory" (
+    "id" TEXT NOT NULL,
+    "orderId" TEXT NOT NULL,
+    "tenantId" TEXT NOT NULL,
+    "fromStatus" "OrderStatus",
+    "toStatus" "OrderStatus" NOT NULL,
+    "changedByUserId" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "OrderStatusHistory_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -113,6 +131,18 @@ CREATE TABLE "OutboxEvent" (
     CONSTRAINT "OutboxEvent_pkey" PRIMARY KEY ("id")
 );
 
+-- CreateTable
+CREATE TABLE "RefreshToken" (
+    "id" TEXT NOT NULL,
+    "userId" TEXT NOT NULL,
+    "tokenHash" TEXT NOT NULL,
+    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "revokedAt" TIMESTAMP(3),
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "RefreshToken_pkey" PRIMARY KEY ("id")
+);
+
 -- CreateIndex
 CREATE INDEX "User_email_idx" ON "User"("email");
 
@@ -135,19 +165,31 @@ CREATE INDEX "Product_tenantId_idx" ON "Product"("tenantId");
 CREATE INDEX "Product_active_idx" ON "Product"("active");
 
 -- CreateIndex
-CREATE INDEX "Order_tenantId_idx" ON "Order"("tenantId");
-
--- CreateIndex
-CREATE INDEX "Order_status_idx" ON "Order"("status");
+CREATE INDEX "Order_tenantId_status_idx" ON "Order"("tenantId", "status");
 
 -- CreateIndex
 CREATE INDEX "Order_createdAt_idx" ON "Order"("createdAt");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Order_tenantId_number_key" ON "Order"("tenantId", "number");
+
+-- CreateIndex
 CREATE INDEX "OrderItem_orderId_idx" ON "OrderItem"("orderId");
 
 -- CreateIndex
+CREATE INDEX "OrderItem_tenantId_idx" ON "OrderItem"("tenantId");
+
+-- CreateIndex
 CREATE INDEX "OrderItem_productId_idx" ON "OrderItem"("productId");
+
+-- CreateIndex
+CREATE INDEX "OrderStatusHistory_orderId_idx" ON "OrderStatusHistory"("orderId");
+
+-- CreateIndex
+CREATE INDEX "OrderStatusHistory_tenantId_idx" ON "OrderStatusHistory"("tenantId");
+
+-- CreateIndex
+CREATE INDEX "OrderStatusHistory_createdAt_idx" ON "OrderStatusHistory"("createdAt");
 
 -- CreateIndex
 CREATE INDEX "Payment_status_idx" ON "Payment"("status");
@@ -166,6 +208,12 @@ CREATE INDEX "OutboxEvent_status_idx" ON "OutboxEvent"("status");
 
 -- CreateIndex
 CREATE INDEX "OutboxEvent_createdAt_idx" ON "OutboxEvent"("createdAt");
+
+-- CreateIndex
+CREATE INDEX "RefreshToken_userId_idx" ON "RefreshToken"("userId");
+
+-- CreateIndex
+CREATE INDEX "RefreshToken_expiresAt_idx" ON "RefreshToken"("expiresAt");
 
 -- AddForeignKey
 ALTER TABLE "User" ADD CONSTRAINT "User_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
@@ -192,7 +240,16 @@ ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_orderId_fkey" FOREIGN KEY ("or
 ALTER TABLE "OrderItem" ADD CONSTRAINT "OrderItem_productId_fkey" FOREIGN KEY ("productId") REFERENCES "Product"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
+ALTER TABLE "OrderStatusHistory" ADD CONSTRAINT "OrderStatusHistory_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "OrderStatusHistory" ADD CONSTRAINT "OrderStatusHistory_changedByUserId_fkey" FOREIGN KEY ("changedByUserId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
 ALTER TABLE "Payment" ADD CONSTRAINT "Payment_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "OutboxEvent" ADD CONSTRAINT "OutboxEvent_tenantId_fkey" FOREIGN KEY ("tenantId") REFERENCES "Tenant"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "RefreshToken" ADD CONSTRAINT "RefreshToken_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

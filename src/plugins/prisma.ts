@@ -1,8 +1,8 @@
 import "dotenv/config";
-import fp from "fastify-plugin";
-import type { FastifyPluginAsync } from "fastify";
-import { PrismaClient } from "@prisma/client";
 import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "@prisma/client";
+import type { FastifyPluginAsync } from "fastify";
+import fp from "fastify-plugin";
 
 const prismaPluginImpl: FastifyPluginAsync = async (app) => {
 	const databaseUrl = process.env.DATABASE_URL;

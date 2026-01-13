@@ -12,5 +12,5 @@
 		"resolveJsonModule": true,
 		"noEmitOnError": true
 	},
-	"include": ["src", "prisma"]
+	"include": ["src", "prisma", "types/*.d.ts"]
 }

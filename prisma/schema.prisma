@@ -13,7 +13,7 @@ enum UserStatus {
 
 enum OrderStatus {
   DRAFT
-  PENDING_PAYMENT
+  OPEN
   PAID
   CANCELED
 }
@@ -39,10 +39,10 @@ model Tenant {
   name      String
   createdAt DateTime @default(now())
 
-  users       User[]
-  roles       Role[]
-  products    Product[]
-  orders      Order[]
+  users        User[]
+  roles        Role[]
+  products     Product[]
+  orders       Order[]
   outboxEvents OutboxEvent[]
 }
 
@@ -54,8 +54,11 @@ model User {
   status       UserStatus @default(ACTIVE)
   createdAt    DateTime   @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  roles  UserRole[]
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles         UserRole[]
+  refreshTokens RefreshToken[]
+
+  orderStatusChanges OrderStatusHistory[] @relation("OrderStatusChangedBy")
 
   @@unique([tenantId, email])
   @@index([email])
@@ -68,7 +71,7 @@ model Role {
   name      String
   createdAt DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   users  UserRole[]
 
   @@unique([tenantId, name])
@@ -86,14 +89,14 @@ model UserRole {
 }
 
 model Product {
-  id        String   @id @default(cuid())
-  tenantId  String
-  name      String
+  id         String   @id @default(cuid())
+  tenantId   String
+  name       String
   priceCents Int
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   items  OrderItem[]
 
   @@index([tenantId])
@@ -101,45 +104,76 @@ model Product {
 }
 
 model Order {
-  id           String      @id @default(cuid())
-  tenantId     String
-  customerName String
-  status       OrderStatus @default(DRAFT)
-  totalCents   Int         @default(0)
-  createdAt    DateTime    @default(now())
+  id       String      @id @default(cuid())
+  tenantId String
+  number   Int
+  status   OrderStatus @default(DRAFT)
 
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  items    OrderItem[]
+  subtotalCents Int @default(0)
+  totalCents    Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant        Tenant               @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items         OrderItem[]
+  statusHistory OrderStatusHistory[]
+
   payments Payment[]
 
-  @@index([tenantId])
-  @@index([status])
+  @@unique([tenantId, number])
+  @@index([tenantId, status])
   @@index([createdAt])
 }
 
 model OrderItem {
-  id            String  @id @default(cuid())
-  orderId       String
-  productId     String
-  qty           Int
+  id       String @id @default(cuid())
+  orderId  String
+  tenantId String
+
+  productId      String
+  productName    String
+  qty            Int
   unitPriceCents Int
   lineTotalCents Int
 
+  createdAt DateTime @default(now())
+
   order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id])
 
   @@index([orderId])
+  @@index([tenantId])
   @@index([productId])
 }
 
+model OrderStatusHistory {
+  id       String @id @default(cuid())
+  orderId  String
+  tenantId String
+
+  fromStatus OrderStatus?
+  toStatus   OrderStatus
+
+  changedByUserId String
+  createdAt       DateTime @default(now())
+
+  order         Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  changedByUser User  @relation("OrderStatusChangedBy", fields: [changedByUserId], references: [id])
+
+  @@index([orderId])
+  @@index([tenantId])
+  @@index([createdAt])
+}
+
 model Payment {
-  id             String        @id @default(cuid())
+  id             String          @id @default(cuid())
   orderId        String
   provider       PaymentProvider @default(MOCK)
-  status         PaymentStatus @default(PENDING)
+  status         PaymentStatus   @default(PENDING)
   amountCents    Int
   idempotencyKey String
-  createdAt      DateTime      @default(now())
+  createdAt      DateTime        @default(now())
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
@@ -149,7 +183,7 @@ model Payment {
 }
 
 model OutboxEvent {
-  id          String      @id @default(cuid())
+  id          String       @id @default(cuid())
   tenantId    String
   type        String
   payloadJson Json
@@ -161,4 +195,18 @@ model OutboxEvent {
   @@index([tenantId])
   @@index([status])
   @@index([createdAt])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }
