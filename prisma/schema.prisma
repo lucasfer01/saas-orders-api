@@ -39,10 +39,10 @@ model Tenant {
   name      String
   createdAt DateTime @default(now())
 
-  users       User[]
-  roles       Role[]
-  products    Product[]
-  orders      Order[]
+  users        User[]
+  roles        Role[]
+  products     Product[]
+  orders       Order[]
   outboxEvents OutboxEvent[]
 }
 
@@ -54,8 +54,9 @@ model User {
   status       UserStatus @default(ACTIVE)
   createdAt    DateTime   @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  roles  UserRole[]
+  tenant        Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  roles         UserRole[]
+  refreshTokens RefreshToken[]
 
   @@unique([tenantId, email])
   @@index([email])
@@ -68,7 +69,7 @@ model Role {
   name      String
   createdAt DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   users  UserRole[]
 
   @@unique([tenantId, name])
@@ -86,14 +87,14 @@ model UserRole {
 }
 
 model Product {
-  id        String   @id @default(cuid())
-  tenantId  String
-  name      String
+  id         String   @id @default(cuid())
+  tenantId   String
+  name       String
   priceCents Int
-  active    Boolean  @default(true)
-  createdAt DateTime @default(now())
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
 
-  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   items  OrderItem[]
 
   @@index([tenantId])
@@ -108,7 +109,7 @@ model Order {
   totalCents   Int         @default(0)
   createdAt    DateTime    @default(now())
 
-  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant   Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   items    OrderItem[]
   payments Payment[]
 
@@ -118,10 +119,10 @@ model Order {
 }
 
 model OrderItem {
-  id            String  @id @default(cuid())
-  orderId       String
-  productId     String
-  qty           Int
+  id             String @id @default(cuid())
+  orderId        String
+  productId      String
+  qty            Int
   unitPriceCents Int
   lineTotalCents Int
 
@@ -133,13 +134,13 @@ model OrderItem {
 }
 
 model Payment {
-  id             String        @id @default(cuid())
+  id             String          @id @default(cuid())
   orderId        String
   provider       PaymentProvider @default(MOCK)
-  status         PaymentStatus @default(PENDING)
+  status         PaymentStatus   @default(PENDING)
   amountCents    Int
   idempotencyKey String
-  createdAt      DateTime      @default(now())
+  createdAt      DateTime        @default(now())
 
   order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
@@ -149,7 +150,7 @@ model Payment {
 }
 
 model OutboxEvent {
-  id          String      @id @default(cuid())
+  id          String       @id @default(cuid())
   tenantId    String
   type        String
   payloadJson Json
@@ -161,4 +162,18 @@ model OutboxEvent {
   @@index([tenantId])
   @@index([status])
   @@index([createdAt])
+}
+
+model RefreshToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
 }

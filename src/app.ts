@@ -6,6 +6,8 @@ import { healthRoutes } from "./routes/health.js";
 import { ApiError } from "./http/errors.js";
 import { ZodError } from "zod";
 import { productsRoutes } from "./modules/products/routes.js";
+import { authPlugin } from "./auth/middleware.js";
+import { authRoutes } from "./modules/auth/routes.js";
 
 export function buildApp() {
     const app = Fastify({
@@ -56,6 +58,8 @@ export function buildApp() {
     app.register(healthRoutes);
 
     app.register(productsRoutes);
+    app.register(authPlugin);
+    app.register(authRoutes);
 
     return app;
 }
