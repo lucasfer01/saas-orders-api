@@ -34,6 +34,8 @@ El foco actual del proyecto es tener un **core técnico completo** (UI/API/DB) y
   - Rate limiting global y por ruta sensible (`@fastify/rate-limit`), con respuestas 429 estandarizadas.
   - Manejador de errores estandarizado: `{ error: { code, message, details? } }` para 401/403/404/409/422/429/500.
   - Tests de integración con Vitest cubriendo auth, products, orders y payments, más pruebas de headers y rate-limit.
+  - **Outbox mínimo + worker**: lock Redis y procesamiento PENDING→PROCESSED (mock publish).
+  - **CI** con GitHub Actions: Node 20 + servicios Postgres/Redis, pasos de install, prisma generate/migrate deploy, typecheck, lint y tests.
 
 ### En progreso / pendiente
 - Observabilidad (tracing, métricas).
@@ -163,6 +165,13 @@ Verificar estado:
 
 ```bash
 npx prisma migrate status
+```
+
+En entornos no interactivos (p. ej. CI) usar:
+
+```bash
+npx prisma generate
+npx prisma migrate deploy
 ```
 
 ### 4) Levantar el servidor
@@ -398,6 +407,23 @@ Formato:
 ```bash
 npx biome check . --write
 ```
+
+---
+
+## CI (GitHub Actions)
+
+Workflow en `.github/workflows/ci.yml`:
+- `runs-on: ubuntu-latest` con servicios `postgres:16` y `redis:7`.
+- Env vars: `NODE_ENV=test`, `DATABASE_URL`, `REDIS_URL`, `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`.
+- Pasos:
+  - `npm ci`
+  - `npx prisma generate`
+  - `npx prisma migrate deploy`
+  - `npm run typecheck`
+  - `npm run lint`
+  - `npm run test --run`
+
+Asegura ejecución determinística de los tests de integración en CI.
 
 ---
 
