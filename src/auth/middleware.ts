@@ -1,3 +1,4 @@
+import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import fp from "fastify-plugin";
 import { ApiError } from "../http/errors.js";
@@ -14,7 +15,7 @@ function forbidden(message = "Forbidden") {
 const authPluginImpl: FastifyPluginAsync = async (app) => {
 	app.decorateRequest("auth", undefined);
 
-	app.decorate("requireAuth", async (req: any) => {
+	app.decorate("requireAuth", async (req: FastifyRequest) => {
 		const header = req.headers.authorization;
 		if (
 			!header ||
@@ -37,20 +38,21 @@ const authPluginImpl: FastifyPluginAsync = async (app) => {
 		}
 	});
 
+	type AuthContext = NonNullable<FastifyRequest["auth"]>;
+
+	function mustAuth(req: FastifyRequest): AuthContext {
+		const auth = req.auth;
+		if (!auth) throw unauthorized("Missing auth context");
+		return auth;
+	}
+
 	app.decorate("requireRole", (roles: string[]) => {
-		return async (req: any) => {
-			if (!req.auth) throw unauthorized("Missing auth context");
-			const ok = roles.some((r) => req.auth.roles.includes(r));
-			if (!ok) throw forbidden("Insufficient role");
+		return async (req: FastifyRequest) => {
+			const auth = mustAuth(req);
+			const ok = roles.some((r) => auth.roles.includes(r));
+			if (!ok) throw forbidden("Missing required role");
 		};
 	});
 };
-
-declare module "fastify" {
-	interface FastifyInstance {
-		requireAuth: (req: unknown) => Promise<void>;
-		requireRole: (roles: string[]) => (req: unknown) => Promise<void>;
-	}
-}
 
 export const authPlugin = fp(authPluginImpl, { name: "auth" });

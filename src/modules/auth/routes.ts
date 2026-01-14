@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import {
 	signAccessToken,
@@ -10,42 +12,51 @@ import { badRequest, conflict, notFound } from "../../http/errors.js";
 import { LoginBody, RefreshBody, RegisterBody } from "./schema.js";
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
+	type AuthContext = NonNullable<FastifyRequest["auth"]>;
+	function getAuth(req: FastifyRequest): AuthContext {
+		const auth = req.auth;
+		if (!auth) throw badRequest("Missing auth context");
+		return auth;
+	}
+
 	// POST /auth/register
 	app.post("/auth/register", async (req, reply) => {
 		const body = RegisterBody.parse(req.body);
 
-		const result = await app.prisma.$transaction(async (tx) => {
-			const tenant = await tx.tenant.create({
-				data: { name: body.tenantName },
-				select: { id: true, name: true, createdAt: true },
-			});
+		const result = await app.prisma.$transaction(
+			async (tx: Prisma.TransactionClient) => {
+				const tenant = await tx.tenant.create({
+					data: { name: body.tenantName },
+					select: { id: true, name: true, createdAt: true },
+				});
 
-			// crear rol ADMIN por tenant
-			const adminRole = await tx.role.create({
-				data: { tenantId: tenant.id, name: "ADMIN" },
-				select: { id: true, name: true },
-			});
+				// crear rol ADMIN por tenant
+				const adminRole = await tx.role.create({
+					data: { tenantId: tenant.id, name: "ADMIN" },
+					select: { id: true, name: true },
+				});
 
-			// evitar email duplicado por tenant
-			const existing = await tx.user.findUnique({
-				where: { tenantId_email: { tenantId: tenant.id, email: body.email } },
-				select: { id: true },
-			});
-			if (existing) throw conflict("Email already exists in tenant");
+				// evitar email duplicado por tenant
+				const existing = await tx.user.findUnique({
+					where: { tenantId_email: { tenantId: tenant.id, email: body.email } },
+					select: { id: true },
+				});
+				if (existing) throw conflict("Email already exists in tenant");
 
-			const user = await tx.user.create({
-				data: {
-					tenantId: tenant.id,
-					email: body.email,
-					passwordHash: await hashPassword(body.password),
-					status: "ACTIVE",
-					roles: { create: [{ roleId: adminRole.id }] },
-				},
-				select: { id: true, email: true },
-			});
+				const user = await tx.user.create({
+					data: {
+						tenantId: tenant.id,
+						email: body.email,
+						passwordHash: await hashPassword(body.password),
+						status: "ACTIVE",
+						roles: { create: [{ roleId: adminRole.id }] },
+					},
+					select: { id: true, email: true },
+				});
 
-			return { tenant, user, roles: ["ADMIN"] };
-		});
+				return { tenant, user, roles: ["ADMIN"] };
+			},
+		);
 
 		// Crear refresh token (DB + JWT)
 		const refreshRow = await app.prisma.refreshToken.create({
@@ -105,7 +116,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 		const ok = await verifyPassword(body.password, user.passwordHash);
 		if (!ok) throw notFound("Invalid credentials");
 
-		const roles = user.roles.map((r) => r.role.name);
+		const roles = user.roles.map((r: any) => r.role.name);
 
 		const refreshRow = await app.prisma.refreshToken.create({
 			data: {
@@ -180,7 +191,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 			},
 		});
 		if (!user || user.status !== "ACTIVE") throw badRequest("User inactive");
-		const roles = user.roles.map((r) => r.role.name);
+		const roles = user.roles.map((r: any) => r.role.name);
 
 		// Rotar: revocar token anterior y emitir nuevo
 		await app.prisma.refreshToken.update({
@@ -245,7 +256,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 		"/me",
 		{ preHandler: async (req) => app.requireAuth(req) },
 		async (req) => {
-			const auth = (req as any).auth;
+			const auth = getAuth(req);
 
 			const user = await app.prisma.user.findUnique({
 				where: { id: auth.userId },
@@ -265,7 +276,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 				email: user.email,
 				tenantId: user.tenantId,
 				status: user.status,
-				roles: user.roles.map((r) => r.role.name),
+				roles: user.roles.map((r: any) => r.role.name),
 			};
 		},
 	);

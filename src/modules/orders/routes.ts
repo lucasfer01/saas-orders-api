@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import { badRequest, notFound } from "../../http/errors.js";
@@ -117,11 +117,8 @@ export const ordersRoutes: FastifyPluginAsync = async (app) => {
 
 	function isUniqueViolation(err: unknown) {
 		return (
-			typeof err === "object" &&
-			err !== null &&
-			"code" in err &&
-			// PrismaClientKnownRequestError.code === "P2002"
-			(err as any).code === "P2002"
+			err instanceof Prisma.PrismaClientKnownRequestError &&
+			err.code === "P2002"
 		);
 	}
 
@@ -147,7 +144,6 @@ export const ordersRoutes: FastifyPluginAsync = async (app) => {
 		throw lastErr;
 	}
 
-
 	// POST /orders (ADMIN|MANAGER)
 	app.post(
 		"/orders",
@@ -158,7 +154,6 @@ export const ordersRoutes: FastifyPluginAsync = async (app) => {
 
 			const order = await createOrderWithRetry(tenantId);
 			return reply.status(201).send(order);
-
 		},
 	);
 
@@ -276,52 +271,54 @@ export const ordersRoutes: FastifyPluginAsync = async (app) => {
 
 			const lineTotal = product.priceCents * body.qty;
 
-			const result = await app.prisma.$transaction(async (tx) => {
-				await assertOrderEditable(tx, id, tenantId);
+			const result = await app.prisma.$transaction(
+				async (tx: Prisma.TransactionClient) => {
+					await assertOrderEditable(tx, id, tenantId);
 
-				await tx.orderItem.create({
-					data: {
-						orderId: id,
-						tenantId,
-						productId: product.id,
-						productName: product.name,
-						qty: body.qty,
-						unitPriceCents: product.priceCents,
-						lineTotalCents: lineTotal,
-					},
-				});
-
-				await recalcTotals(tx, id, tenantId);
-
-				const updated = await tx.order.findFirst({
-					where: { id, tenantId },
-					select: {
-						id: true,
-						tenantId: true,
-						number: true,
-						status: true,
-						subtotalCents: true,
-						totalCents: true,
-						createdAt: true,
-						updatedAt: true,
-						items: {
-							select: {
-								id: true,
-								productId: true,
-								productName: true,
-								qty: true,
-								unitPriceCents: true,
-								lineTotalCents: true,
-								createdAt: true,
-							},
-							orderBy: { createdAt: "asc" },
+					await tx.orderItem.create({
+						data: {
+							orderId: id,
+							tenantId,
+							productId: product.id,
+							productName: product.name,
+							qty: body.qty,
+							unitPriceCents: product.priceCents,
+							lineTotalCents: lineTotal,
 						},
-					},
-				});
+					});
 
-				if (!updated) throw notFound("Order not found");
-				return updated;
-			});
+					await recalcTotals(tx, id, tenantId);
+
+					const updated = await tx.order.findFirst({
+						where: { id, tenantId },
+						select: {
+							id: true,
+							tenantId: true,
+							number: true,
+							status: true,
+							subtotalCents: true,
+							totalCents: true,
+							createdAt: true,
+							updatedAt: true,
+							items: {
+								select: {
+									id: true,
+									productId: true,
+									productName: true,
+									qty: true,
+									unitPriceCents: true,
+									lineTotalCents: true,
+									createdAt: true,
+								},
+								orderBy: { createdAt: "asc" },
+							},
+						},
+					});
+
+					if (!updated) throw notFound("Order not found");
+					return updated;
+				},
+			);
 
 			return result;
 		},
@@ -355,28 +352,30 @@ export const ordersRoutes: FastifyPluginAsync = async (app) => {
 				throw badRequest("Invalid status transition");
 			}
 
-			const updated = await app.prisma.$transaction(async (tx) => {
-				const res = await tx.order.updateMany({
-					where: { id, tenantId, status: from },
-					data: { status: toStatus },
-				});
+			const updated = await app.prisma.$transaction(
+				async (tx: Prisma.TransactionClient) => {
+					const res = await tx.order.updateMany({
+						where: { id, tenantId, status: from },
+						data: { status: toStatus },
+					});
 
-				if (res.count === 0) throw badRequest("Order status changed, retry");
+					if (res.count === 0) throw badRequest("Order status changed, retry");
 
-				await tx.orderStatusHistory.create({
-					data: {
-						orderId: id,
-						tenantId,
-						fromStatus: from,
-						toStatus,
-						changedByUserId: userId,
-					},
-				});
+					await tx.orderStatusHistory.create({
+						data: {
+							orderId: id,
+							tenantId,
+							fromStatus: from,
+							toStatus,
+							changedByUserId: userId,
+						},
+					});
 
-				const o = await getOrderDetail(tx, id, tenantId);
-				if (!o) throw notFound("Order not found");
-				return o;
-			});
+					const o = await getOrderDetail(tx, id, tenantId);
+					if (!o) throw notFound("Order not found");
+					return o;
+				},
+			);
 
 			return updated;
 		},
@@ -407,23 +406,24 @@ export const ordersRoutes: FastifyPluginAsync = async (app) => {
 
 			const newLineTotal = item.unitPriceCents * body.qty;
 
-			const result = await app.prisma.$transaction(async (tx) => {
-				await assertOrderEditable(tx, id, tenantId);
+			const result = await app.prisma.$transaction(
+				async (tx: Prisma.TransactionClient) => {
+					await assertOrderEditable(tx, id, tenantId);
 
-				const upd = await tx.orderItem.updateMany({
-					where: { id: itemId, orderId: id, tenantId },
-					data: { qty: body.qty, lineTotalCents: newLineTotal },
-				});
+					const upd = await tx.orderItem.updateMany({
+						where: { id: itemId, orderId: id, tenantId },
+						data: { qty: body.qty, lineTotalCents: newLineTotal },
+					});
 
-				if (upd.count === 0) throw notFound("Order item not found");
+					if (upd.count === 0) throw notFound("Order item not found");
 
-				await recalcTotals(tx, id, tenantId);
+					await recalcTotals(tx, id, tenantId);
 
-				const updated = await getOrderDetail(tx, id, tenantId);
-				if (!updated) throw notFound("Order not found");
-				return updated;
-			});
-
+					const updated = await getOrderDetail(tx, id, tenantId);
+					if (!updated) throw notFound("Order not found");
+					return updated;
+				},
+			);
 
 			return result;
 		},
@@ -451,22 +451,22 @@ export const ordersRoutes: FastifyPluginAsync = async (app) => {
 			});
 			if (!exists) throw notFound("Order item not found");
 
-			const result = await app.prisma.$transaction(async (tx) => {
-				await assertOrderEditable(tx, id, tenantId);
+			const result = await app.prisma.$transaction(
+				async (tx: Prisma.TransactionClient) => {
+					await assertOrderEditable(tx, id, tenantId);
 
-				const del = await tx.orderItem.deleteMany({
-					where: { id: itemId, orderId: id, tenantId },
-				});
-				if (del.count === 0) throw notFound("Order item not found");
+					const del = await tx.orderItem.deleteMany({
+						where: { id: itemId, orderId: id, tenantId },
+					});
+					if (del.count === 0) throw notFound("Order item not found");
 
+					await recalcTotals(tx, id, tenantId);
 
-				await recalcTotals(tx, id, tenantId);
-
-				const updated = await getOrderDetail(tx, id, tenantId);
-				if (!updated) throw notFound("Order not found");
-				return updated;
-
-			});
+					const updated = await getOrderDetail(tx, id, tenantId);
+					if (!updated) throw notFound("Order not found");
+					return updated;
+				},
+			);
 
 			return result;
 		},

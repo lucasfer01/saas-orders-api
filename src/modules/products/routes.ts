@@ -1,11 +1,19 @@
+import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
-import { notFound } from "../../http/errors.js";
+import { badRequest, notFound } from "../../http/errors.js";
 import {
 	CreateProductBody,
 	ListProductsQuery,
 	ProductIdParams,
 	UpdateProductBody,
 } from "./schemas.js";
+
+type AuthContext = NonNullable<FastifyRequest["auth"]>;
+function getAuth(req: FastifyRequest): AuthContext {
+	const auth = req.auth;
+	if (!auth) throw badRequest("Missing auth context");
+	return auth;
+}
 
 export const productsRoutes: FastifyPluginAsync = async (app) => {
 	// Protege todo el módulo
@@ -18,7 +26,7 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 		"/products",
 		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
 		async (req, reply) => {
-			const { tenantId } = (req as any).auth;
+			const { tenantId } = getAuth(req);
 			const body = CreateProductBody.parse(req.body);
 
 			const product = await app.prisma.product.create({
@@ -50,7 +58,7 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
 		},
 		async (req) => {
-			const { tenantId } = (req as any).auth;
+			const { tenantId } = getAuth(req);
 			const q = ListProductsQuery.parse(req.query);
 
 			const where = {
@@ -94,7 +102,7 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
 		},
 		async (req) => {
-			const { tenantId } = (req as any).auth;
+			const { tenantId } = getAuth(req);
 			const { id } = ProductIdParams.parse(req.params);
 
 			const product = await app.prisma.product.findFirst({
@@ -119,7 +127,7 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 		"/products/:id",
 		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
 		async (req) => {
-			const { tenantId } = (req as any).auth;
+			const { tenantId } = getAuth(req);
 			const { id } = ProductIdParams.parse(req.params);
 			const body = UpdateProductBody.parse(req.body);
 
