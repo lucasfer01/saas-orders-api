@@ -79,6 +79,34 @@ afterAll(async () => {
 });
 
 describe("payments module", () => {
+  it("auth required: POST /orders/:id/payments, GET list, GET by id => 401", async () => {
+    const post = await app.inject({ method: "POST", url: "/orders/some-order/payments", payload: { amountCents: 1, method: "CARD", idempotencyKey: genIdempotencyKey("auth") } });
+    expect(post.statusCode).toBe(401);
+    const list = await app.inject({ method: "GET", url: "/orders/some-order/payments" });
+    expect(list.statusCode).toBe(401);
+    const get = await app.inject({ method: "GET", url: "/payments/some-id" });
+    expect(get.statusCode).toBe(401);
+  });
+
+  it("rbac: MANAGER puede crear payment; STAFF no", async () => {
+    const reg = await app.inject({ method: "POST", url: "/auth/register", payload: { tenantName: `Pay-RBAC-${Date.now()}`, email: "admin@payrbac.com", password: "secret12345" } });
+    expect(reg.statusCode).toBe(201);
+    const { accessToken, tenant, user } = reg.json() as any;
+    const product = await createProduct(accessToken, { name: "RB-Prod", priceCents: 123 });
+    const order = await createOrder(accessToken);
+    await addItem(accessToken, order.id, { productId: product.id, qty: 1 });
+    await updateStatus(accessToken, order.id, "OPEN");
+    const amount = (await getOrder(accessToken, order.id)).json().totalCents as number;
+
+    const managerToken = signAccessToken({ sub: user.id, tenantId: tenant.id, roles: ["MANAGER"] });
+    const ok = await app.inject({ method: "POST", url: `/orders/${order.id}/payments`, headers: { Authorization: `Bearer ${managerToken}` }, payload: { amountCents: amount, method: "CARD", idempotencyKey: genIdempotencyKey("mgr") } });
+    expect([200, 201]).toContain(ok.statusCode);
+
+    const staffToken = signAccessToken({ sub: user.id, tenantId: tenant.id, roles: ["STAFF"] });
+    const fail = await app.inject({ method: "POST", url: `/orders/${order.id}/payments`, headers: { Authorization: `Bearer ${staffToken}` }, payload: { amountCents: amount, method: "CARD", idempotencyKey: genIdempotencyKey("staff-pay") } });
+    expect(fail.statusCode).toBe(403);
+  });
+
   it("happy path: OPEN order -> payment succeeds -> order PAID + history", async () => {
     const a = await registerTenant({
       tenantName: "Pay-A",
@@ -242,6 +270,23 @@ describe("payments module", () => {
     expect([400, 409]).toContain(res.statusCode);
   });
 
+  it("No paga si order está DRAFT o CANCELED (400)", async () => {
+    const a = await registerTenant({ tenantName: `Pay-States-${Date.now()}`, email: "admin@pstates.com", password: "secret12345" });
+    const product = await createProduct(a.accessToken, { name: "PST-Prod", priceCents: 200 });
+    const order = await createOrder(a.accessToken);
+    await addItem(a.accessToken, order.id, { productId: product.id, qty: 1 });
+    // DRAFT => 400
+    const draftAmount = (await getOrder(a.accessToken, order.id)).json().totalCents as number;
+    const payDraft = await app.inject({ method: "POST", url: `/orders/${order.id}/payments`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { amountCents: draftAmount, method: "CARD", idempotencyKey: genIdempotencyKey("draft") } });
+    expect(payDraft.statusCode).toBe(400);
+    // CANCELED => 400
+    await updateStatus(a.accessToken, order.id, "OPEN");
+    await updateStatus(a.accessToken, order.id, "CANCELED");
+    const canceledAmount = (await getOrder(a.accessToken, order.id)).json().totalCents as number;
+    const payCanceled = await app.inject({ method: "POST", url: `/orders/${order.id}/payments`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { amountCents: canceledAmount, method: "CARD", idempotencyKey: genIdempotencyKey("canceled") } });
+    expect(payCanceled.statusCode).toBe(400);
+  });
+
   it("lists payments for an order and gets by id", async () => {
     const a = await registerTenant({ tenantName: "Pay-List", email: "admin@plist.com", password: "secret12345" });
     const product = await createProduct(a.accessToken, { name: "PL-Prod", priceCents: 250 });
@@ -280,6 +325,20 @@ describe("payments module", () => {
     const got = getRes.json() as any;
     expect(got.id).toBe(payment.id);
     expect(got.orderId).toBe(order.id);
+  });
+
+  it("list payments is tenant-scoped (404 from other tenant)", async () => {
+    const a = await registerTenant({ tenantName: `Pay-List-ISO-A-${Date.now()}`, email: "admin@plisoa.com", password: "secret12345" });
+    const b = await registerTenant({ tenantName: `Pay-List-ISO-B-${Date.now()}`, email: "admin@plisob.com", password: "secret12345" });
+    const prodA = await createProduct(a.accessToken, { name: "PLI-Prod", priceCents: 300 });
+    const orderA = await createOrder(a.accessToken);
+    await addItem(a.accessToken, orderA.id, { productId: prodA.id, qty: 1 });
+    await updateStatus(a.accessToken, orderA.id, "OPEN");
+    const amount = (await getOrder(a.accessToken, orderA.id)).json().totalCents as number;
+    await app.inject({ method: "POST", url: `/orders/${orderA.id}/payments`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { amountCents: amount, method: "CARD", idempotencyKey: genIdempotencyKey("iso-list") } });
+
+    const listByB = await app.inject({ method: "GET", url: `/orders/${orderA.id}/payments`, headers: { Authorization: `Bearer ${b.accessToken}` } });
+    expect(listByB.statusCode).toBe(404);
   });
 
   it("idempotency 409 when reusing key with different payload", async () => {
@@ -377,5 +436,30 @@ describe("payments module", () => {
       headers: { Authorization: `Bearer ${b.accessToken}` },
     });
     expect(getByB.statusCode).toBe(404);
+  });
+
+  it("idempotency concurrency: 2 POST simultáneos con misma key -> mismo payment", async () => {
+    const a = await registerTenant({ tenantName: `Pay-Con-${Date.now()}`, email: "admin@pcon.com", password: "secret12345" });
+    const product = await createProduct(a.accessToken, { name: "PCON-Prod", priceCents: 450 });
+    const order = await createOrder(a.accessToken);
+    await addItem(a.accessToken, order.id, { productId: product.id, qty: 1 });
+    await updateStatus(a.accessToken, order.id, "OPEN");
+    const amount = (await getOrder(a.accessToken, order.id)).json().totalCents as number;
+    const idem = genIdempotencyKey("race");
+
+    const [r1, r2] = await Promise.all([
+      app.inject({ method: "POST", url: `/orders/${order.id}/payments`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { amountCents: amount, method: "CARD", idempotencyKey: idem } }),
+      app.inject({ method: "POST", url: `/orders/${order.id}/payments`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { amountCents: amount, method: "CARD", idempotencyKey: idem } }),
+    ]);
+    expect([200,201]).toContain(r1.statusCode);
+    expect([200,201]).toContain(r2.statusCode);
+    const p1 = r1.json() as any;
+    const p2 = r2.json() as any;
+    expect(p1.id).toBe(p2.id);
+
+    const list = await app.inject({ method: "GET", url: `/orders/${order.id}/payments`, headers: { Authorization: `Bearer ${a.accessToken}` } });
+    const body = list.json() as any;
+    expect(body.total).toBeGreaterThanOrEqual(1);
+    expect(body.items.filter((x: any) => x.id === p1.id).length).toBe(1);
   });
 });
