@@ -4,5 +4,14 @@
 	"linter": {
 		"enabled": true,
 		"rules": { "recommended": true }
+	},
+	"files": {
+		"includes": [
+			"src/**",
+			"prisma/**",
+			"package.json",
+			"tsconfig.json",
+			"vitest.config.ts"
+		]
 	}
 }

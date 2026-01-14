@@ -12,11 +12,7 @@ export default defineConfig({
 			reporter: ["text", "html", "lcov"],
 			all: true,
 			include: ["src/**/*.ts"],
-			exclude: [
-				"**/*.d.ts",
-				"**/*.{test,spec}.ts",
-				"**/vitest.setup.ts",
-			],
+			exclude: ["**/*.d.ts", "**/*.{test,spec}.ts", "**/vitest.setup.ts"],
 			reportsDirectory: "coverage",
 			watermarks: {
 				statements: [80, 95],

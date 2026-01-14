@@ -116,7 +116,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 		const ok = await verifyPassword(body.password, user.passwordHash);
 		if (!ok) throw notFound("Invalid credentials");
 
-		const roles = user.roles.map((r: any) => r.role.name);
+		type RoleNameRow = { role: { name: string } };
+		const roles = user.roles.map((r: RoleNameRow) => r.role.name);
 
 		const refreshRow = await app.prisma.refreshToken.create({
 			data: {
@@ -191,7 +192,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 			},
 		});
 		if (!user || user.status !== "ACTIVE") throw badRequest("User inactive");
-		const roles = user.roles.map((r: any) => r.role.name);
+		type RoleNameRow = { role: { name: string } };
+		const roles = user.roles.map((r: RoleNameRow) => r.role.name);
 
 		// Rotar: revocar token anterior y emitir nuevo
 		await app.prisma.refreshToken.update({
@@ -271,12 +273,13 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
 			if (!user) throw notFound("User not found");
 
+			type RoleNameRow = { role: { name: string } };
 			return {
 				id: user.id,
 				email: user.email,
 				tenantId: user.tenantId,
 				status: user.status,
-				roles: user.roles.map((r: any) => r.role.name),
+				roles: user.roles.map((r: RoleNameRow) => r.role.name),
 			};
 		},
 	);
