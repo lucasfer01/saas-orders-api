@@ -36,8 +36,6 @@ El foco actual del proyecto es tener un **core técnico completo** (UI/API/DB) y
   - Tests de integración con Vitest cubriendo auth, products, orders y payments, más pruebas de headers y rate-limit.
 
 ### En progreso / pendiente
-- **OutboxEvent** (eventos para integración asíncrona: pagos, notificaciones, etc.).
-- Worker/cron para procesar outbox (y potencialmente Redis para locks/colas).
 - Observabilidad (tracing, métricas).
 
 ---
@@ -342,6 +340,29 @@ Comandos:
 npm run test
 npm run test:coverage
 ```
+
+---
+
+## Outbox (mínimo) + Worker
+
+- Cuando un `Payment` pasa a `SUCCEEDED`, se inserta un `OutboxEvent` `PENDING` con `type: "PAYMENT_SUCCEEDED"` y payload `{ tenantId, orderId, paymentId, amountCents, method, occurredAt }` dentro de la MISMA transacción que mueve la `Order` a `PAID` y registra `OrderStatusHistory`.
+- Idempotente: reintentos con la misma `idempotencyKey` no generan eventos duplicados.
+- Worker mínimo: procesa en batches los `OutboxEvent` con estado `PENDING`, publica (mock: log) y marca `PROCESSED`. Usa un lock global en Redis (`outbox:lock`).
+
+Requisitos de entorno:
+
+```env
+DATABASE_URL="postgresql://USER:PASSWORD@localhost:9876/app?schema=public"
+REDIS_URL="redis://localhost:6379"
+```
+
+Ejecución manual del worker (una pasada):
+
+```bash
+npm run outbox:run
+```
+
+Nota: por ahora el worker realiza un “publish” mock (log). La integración real con brokers/servicios externos puede conectarse aquí sin cambiar la transacción de negocio.
 
 ---
 
