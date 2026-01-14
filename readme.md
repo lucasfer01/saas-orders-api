@@ -27,13 +27,18 @@ El foco actual del proyecto es tener un **core técnico completo** (UI/API/DB) y
   - `GET /products/:id` (ADMIN | MANAGER | STAFF)
   - `PATCH /products/:id` (ADMIN | MANAGER)
 - **Healthcheck** con verificación DB.
+- **Módulo Orders** (protegido + tenant-scoped): CRUD de órdenes, manejo de items, recalculo de totales, numeración incremental por tenant y transiciones de estado con auditoría (`OrderStatusHistory`).
+- **Módulo Payments** (protegido + tenant-scoped): `POST /orders/:id/payments` con idempotencia por `idempotencyKey`, procesamiento transaccional y transición atómica de `Order` a `PAID` cuando el pago `SUCCEEDED`. Listado y detalle de pagos.
+- **Hardening v1**:
+  - Headers de seguridad vía `@fastify/helmet` (frameguard deny, noSniff, hidePoweredBy, xssFilter, referrerPolicy).
+  - Rate limiting global y por ruta sensible (`@fastify/rate-limit`), con respuestas 429 estandarizadas.
+  - Manejador de errores estandarizado: `{ error: { code, message, details? } }` para 401/403/404/409/422/429/500.
+  - Tests de integración con Vitest cubriendo auth, products, orders y payments, más pruebas de headers y rate-limit.
 
 ### En progreso / pendiente
-- Módulo **Orders** (CRUD + items + numeración + estados).
-- **Payments** (idempotencia, provider mock, status transitions).
-- **OrderStatusHistory** (auditoría automática al cambiar estado).
 - **OutboxEvent** (eventos para integración asíncrona: pagos, notificaciones, etc.).
 - Worker/cron para procesar outbox (y potencialmente Redis para locks/colas).
+- Observabilidad (tracing, métricas).
 
 ---
 
@@ -77,6 +82,7 @@ Crear un `.env` (o configurar variables del sistema). Mínimo:
 ```env
 # DB
 DATABASE_URL="postgresql://USER:PASSWORD@localhost:9876/app?schema=public"
+REDIS_URL="redis://localhost:6379"
 
 # JWT
 JWT_ACCESS_SECRET="your_access_secret"
@@ -87,12 +93,50 @@ JWT_REFRESH_TTL_DAYS=14
 # App
 NODE_ENV=development
 PORT=3001
+
+# Rate limiting (valores por defecto seguros; ajustables por entorno)
+RATE_LIMIT_GLOBAL_MAX=1000
+RATE_LIMIT_GLOBAL_TIME_WINDOW=60000
+
+RATE_LIMIT_LOGIN_MAX=10
+RATE_LIMIT_LOGIN_TIME_WINDOW=60000
+
+RATE_LIMIT_REGISTER_MAX=5
+RATE_LIMIT_REGISTER_TIME_WINDOW=60000
+
+RATE_LIMIT_REFRESH_MAX=20
+RATE_LIMIT_REFRESH_TIME_WINDOW=60000
+
+RATE_LIMIT_PAYMENTS_MAX=30
+RATE_LIMIT_PAYMENTS_TIME_WINDOW=60000
 ````
 
 Notas:
 
 * En Prisma v7, el **datasource URL se configura desde `prisma.config.ts`** (no en el `schema.prisma`).
 * `DATABASE_URL` debe coincidir con tu Postgres local.
+* En entorno de `test`, se elevan algunos límites globales para evitar flakiness y se reduce el de login para que el caso de 429 sea determinístico.
+
+---
+
+## Hardening / Security (v1)
+
+- **Helmet**: se aplican globalmente los headers de seguridad:
+  - `x-content-type-options: nosniff`
+  - `x-frame-options: DENY`
+  - `referrer-policy: no-referrer`
+  - `x-xss-protection` (modo filtro)
+  - `x-powered-by` oculto
+- **Rate limiting** (`@fastify/rate-limit`):
+  - Global (clave por IP) con límites definidos por `RATE_LIMIT_GLOBAL_*`.
+  - Por ruta sensible:
+    - `POST /auth/register`, `POST /auth/login`, `POST /auth/refresh` (clave por IP).
+    - `POST /orders/:id/payments` (clave por `tenantId:userId`).
+  - Respuesta 429 estandarizada: `{ error: { code: "RATE_LIMITED", message: "Too many requests", details: { max, timeWindow } } }`.
+- **Errores estandarizados**: todas las respuestas de error siguen la forma `{ error: { code, message, details? } }` con mapeo consistente:
+  - 401 `UNAUTHORIZED`, 403 `FORBIDDEN`, 404 `NOT_FOUND`, 409 `CONFLICT`, 422 `VALIDATION_ERROR`, 429 `RATE_LIMITED`, 500 `INTERNAL_ERROR`.
+
+---
 
 ---
 
@@ -272,6 +316,31 @@ Headers esperados:
 
 ```http
 Authorization: Bearer <accessToken>
+```
+
+### Payments (protegido, tenant-scoped)
+
+* `POST /orders/:id/payments` (ADMIN | MANAGER)
+* `GET /orders/:id/payments` (ADMIN | MANAGER | STAFF)
+* `GET /payments/:paymentId` (ADMIN | MANAGER | STAFF)
+
+Reglas clave:
+- Idempotencia por `idempotencyKey` único dentro de un tenant.
+- Procesamiento transaccional: crea `Payment` y, si `SUCCEEDED`, transiciona `Order` a `PAID` de forma atómica y registra `OrderStatusHistory`.
+- Listado y detalle scopiados por `tenantId`.
+
+---
+
+## Tests
+
+- Framework: **Vitest** con `app.inject` de Fastify para integración.
+- Cobertura: auth, products, orders, payments, headers de seguridad, shape de errores y rate-limit.
+
+Comandos:
+
+```bash
+npm run test
+npm run test:coverage
 ```
 
 ---

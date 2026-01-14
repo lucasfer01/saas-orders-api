@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
+import { env } from "../../config/env.js";
 import { badRequest, conflict, notFound } from "../../http/errors.js";
 import {
 	CreatePaymentBody,
@@ -32,7 +33,20 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 	// POST /orders/:id/payments (ADMIN | MANAGER)
 	app.post(
 		"/orders/:id/payments",
-		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
+		{
+			preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req),
+			config: {
+				rateLimit: {
+					max: env.RATE_LIMIT_PAYMENTS_MAX,
+					timeWindow: env.RATE_LIMIT_PAYMENTS_TIME_WINDOW,
+					keyGenerator: (req: FastifyRequest) => {
+						const auth = req.auth;
+						if (auth) return `tenant:${auth.tenantId}:user:${auth.userId}`;
+						return req.ip;
+					},
+				},
+			},
+		},
 		async (req, reply) => {
 			const { tenantId, userId } = getAuth(req);
 			const { id: orderId } = OrderIdParams.parse(req.params);

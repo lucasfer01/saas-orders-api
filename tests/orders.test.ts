@@ -311,8 +311,8 @@ describe("orders module - hardening", () => {
 		const order = await createOrder(a.accessToken);
 
 		const res = await addItem(a.accessToken, order.id, { productId: product.id, qty: 0 });
-		// Si tu Zod valida, debería ser 400
-		expect(res.statusCode).toBe(400);
+		// Zod validation debe devolver 422
+		expect(res.statusCode).toBe(422);
 	});
 
 	it("items: update qty recalculates totals", async () => {
