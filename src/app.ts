@@ -5,6 +5,7 @@ import { env } from "./config/env.js";
 import { ApiError } from "./http/errors.js";
 import { authRoutes } from "./modules/auth/routes.js";
 import { ordersRoutes } from "./modules/orders/routes.js";
+import { paymentsRoutes } from "./modules/payments/routes.js";
 import { productsRoutes } from "./modules/products/routes.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { redisPlugin } from "./plugins/redis.js";
@@ -63,6 +64,8 @@ export function buildApp() {
 	app.register(productsRoutes);
 
 	app.register(ordersRoutes);
+
+	app.register(paymentsRoutes);
 
 	app.register(healthRoutes);
 
