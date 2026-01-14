@@ -43,27 +43,62 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 	);
 
 	// GET /products (ADMIN|MANAGER|STAFF)
-	app.get("/products", async (req) => {
-		const { tenantId } = (req as any).auth;
-		const q = ListProductsQuery.parse(req.query);
+	app.get(
+		"/products",
+		{
+			preHandler: async (req) =>
+				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
+		},
+		async (req) => {
+			const { tenantId } = (req as any).auth;
+			const q = ListProductsQuery.parse(req.query);
 
-		const where = {
-			tenantId,
-			...(q.active !== undefined ? { active: q.active } : {}),
-			...(q.search
-				? { name: { contains: q.search, mode: "insensitive" as const } }
-				: {}),
-		};
+			const where = {
+				tenantId,
+				...(q.active !== undefined ? { active: q.active } : {}),
+				...(q.search
+					? { name: { contains: q.search, mode: "insensitive" as const } }
+					: {}),
+			};
 
-		const skip = (q.page - 1) * q.pageSize;
-		const take = q.pageSize;
+			const skip = (q.page - 1) * q.pageSize;
+			const take = q.pageSize;
 
-		const [items, total] = await Promise.all([
-			app.prisma.product.findMany({
-				where,
-				orderBy: { createdAt: "desc" },
-				skip,
-				take,
+			const [items, total] = await Promise.all([
+				app.prisma.product.findMany({
+					where,
+					orderBy: { createdAt: "desc" },
+					skip,
+					take,
+					select: {
+						id: true,
+						tenantId: true,
+						name: true,
+						priceCents: true,
+						active: true,
+						createdAt: true,
+					},
+				}),
+				app.prisma.product.count({ where }),
+			]);
+
+			return { page: q.page, pageSize: q.pageSize, total, items };
+		},
+	);
+
+	// GET /products/:id (ADMIN|MANAGER|STAFF)
+	app.get(
+		"/products/:id",
+		{
+			preHandler: async (req) =>
+				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
+		},
+		async (req) => {
+			const { tenantId } = (req as any).auth;
+			const { id } = ProductIdParams.parse(req.params);
+
+			const product = await app.prisma.product.findFirst({
+				where: { id, tenantId },
 				select: {
 					id: true,
 					tenantId: true,
@@ -72,33 +107,12 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 					active: true,
 					createdAt: true,
 				},
-			}),
-			app.prisma.product.count({ where }),
-		]);
+			});
 
-		return { page: q.page, pageSize: q.pageSize, total, items };
-	});
-
-	// GET /products/:id (ADMIN|MANAGER|STAFF)
-	app.get("/products/:id", async (req) => {
-		const { tenantId } = (req as any).auth;
-		const { id } = ProductIdParams.parse(req.params);
-
-		const product = await app.prisma.product.findFirst({
-			where: { id, tenantId },
-			select: {
-				id: true,
-				tenantId: true,
-				name: true,
-				priceCents: true,
-				active: true,
-				createdAt: true,
-			},
-		});
-
-		if (!product) throw notFound("Product not found");
-		return product;
-	});
+			if (!product) throw notFound("Product not found");
+			return product;
+		},
+	);
 
 	// PATCH /products/:id (ADMIN|MANAGER)
 	app.patch(

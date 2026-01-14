@@ -1,279 +1,455 @@
+import type { Prisma } from "@prisma/client";
+import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import { badRequest, notFound } from "../../http/errors.js";
 import {
-  AddItemBody,
-  CreateOrderBody,
-  ListOrdersQuery,
-  OrderIdParams,
-  UpdateOrderStatusBody,
+	AddItemBody,
+	CreateOrderBody,
+	ListOrdersQuery,
+	OrderIdParams,
+	OrderItemIdParams,
+	UpdateItemBody,
+	UpdateOrderStatusBody,
 } from "./schemas.js";
 
 export const ordersRoutes: FastifyPluginAsync = async (app) => {
-  // Protege todo el módulo
-  app.addHook("preHandler", async (req) => {
-    await app.requireAuth(req);
-  });
+	// Protege todo el módulo
+	app.addHook("preHandler", async (req) => {
+		await app.requireAuth(req);
+	});
 
-  async function getNextOrderNumber(tenantId: string) {
-    const key = `tenant:${tenantId}:order_number`;
-    const exists = await app.redis.exists(key);
-    if (!exists) {
-      const agg = await app.prisma.order.aggregate({
-        where: { tenantId },
-        _max: { number: true },
-      });
-      const current = agg._max.number ?? 0;
-      await app.redis.set(key, String(current));
-    }
-    const next = await app.redis.incr(key);
-    return next;
-  }
+	type AuthContext = NonNullable<FastifyRequest["auth"]>;
 
-  async function recalcTotals(tx: any, orderId: string, tenantId: string) {
-    const sum = await tx.orderItem.aggregate({
-      where: { orderId, tenantId },
-      _sum: { lineTotalCents: true },
-    });
-    const subtotal = sum._sum.lineTotalCents ?? 0;
-    const total = subtotal; // placeholder para impuestos/fees futuros
-    await tx.order.update({
-      where: { id: orderId },
-      data: { subtotalCents: subtotal, totalCents: total },
-    });
-  }
+	function getAuth(req: FastifyRequest): AuthContext {
+		const auth = req.auth;
+		// requireAuth debería garantizar esto, pero lo dejamos defensivo para tipos + runtime
+		if (!auth) throw badRequest("Missing auth context");
+		return auth;
+	}
 
-  // POST /orders (ADMIN|MANAGER)
-  app.post(
-    "/orders",
-    { preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
-    async (req, reply) => {
-      const { tenantId } = (req as any).auth;
-      CreateOrderBody.parse(req.body ?? {});
+	async function getNextOrderNumber(tenantId: string) {
+		const key = `tenant:${tenantId}:order_number`;
 
-      const number = await getNextOrderNumber(tenantId);
+		// Evita exists+set (race). GET + seed con SET NX
+		const current = await app.redis.get(key);
+		if (current === null) {
+			const agg = await app.prisma.order.aggregate({
+				where: { tenantId },
+				_max: { number: true },
+			});
+			const seed = String(agg._max.number ?? 0);
+			// NX: si otro request lo setea antes, este no pisa el valor
+			await app.redis.set(key, seed, "NX");
+		}
 
-      const order = await app.prisma.order.create({
-        data: { tenantId, number, status: "DRAFT" },
-        select: {
-          id: true,
-          tenantId: true,
-          number: true,
-          status: true,
-          subtotalCents: true,
-          totalCents: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      });
+		const next = await app.redis.incr(key);
+		return next;
+	}
 
-      return reply.status(201).send(order);
-    },
-  );
+	// “Lock” + validación de status dentro de la transacción para evitar carreras
+	async function assertOrderEditable(
+		tx: Prisma.TransactionClient,
+		orderId: string,
+		tenantId: string,
+	) {
+		const res = await tx.order.updateMany({
+			where: { id: orderId, tenantId, status: { in: ["DRAFT", "OPEN"] } },
+			// “touch” para forzar UPDATE y lock de fila en Postgres
+			data: { updatedAt: new Date() },
+		});
 
-  // GET /orders (ADMIN|MANAGER|STAFF)
-  app.get("/orders", async (req) => {
-    const { tenantId } = (req as any).auth;
-    const q = ListOrdersQuery.parse(req.query);
+		if (res.count === 0) {
+			throw badRequest("Cannot modify items in current status");
+		}
+	}
 
-    const where: any = { tenantId };
-    if (q.status) where.status = q.status;
-    if (q.from || q.to) where.createdAt = {
-      ...(q.from ? { gte: q.from } : {}),
-      ...(q.to ? { lte: q.to } : {}),
-    };
+	async function recalcTotals(
+		tx: Prisma.TransactionClient,
+		orderId: string,
+		tenantId: string,
+	) {
+		const sum = await tx.orderItem.aggregate({
+			where: { orderId, tenantId },
+			_sum: { lineTotalCents: true },
+		});
+		const subtotal = sum._sum.lineTotalCents ?? 0;
+		const total = subtotal; // placeholder para impuestos/fees futuros
 
-    const skip = (q.page - 1) * q.pageSize;
-    const take = q.pageSize;
+		await tx.order.update({
+			where: { id: orderId },
+			data: { subtotalCents: subtotal, totalCents: total },
+		});
+	}
 
-    const [items, total] = await Promise.all([
-      app.prisma.order.findMany({
-        where,
-        orderBy: { createdAt: "desc" },
-        skip,
-        take,
-        select: {
-          id: true,
-          tenantId: true,
-          number: true,
-          status: true,
-          subtotalCents: true,
-          totalCents: true,
-          createdAt: true,
-          updatedAt: true,
-        },
-      }),
-      app.prisma.order.count({ where }),
-    ]);
+	// POST /orders (ADMIN|MANAGER)
+	app.post(
+		"/orders",
+		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
+		async (req, reply) => {
+			const { tenantId } = getAuth(req);
+			CreateOrderBody.parse(req.body ?? {});
 
-    return { page: q.page, pageSize: q.pageSize, total, items };
-  });
+			const number = await getNextOrderNumber(tenantId);
 
-  // GET /orders/:id (ADMIN|MANAGER|STAFF)
-  app.get("/orders/:id", async (req) => {
-    const { tenantId } = (req as any).auth;
-    const { id } = OrderIdParams.parse(req.params);
+			const order = await app.prisma.order.create({
+				data: { tenantId, number, status: "DRAFT" },
+				select: {
+					id: true,
+					tenantId: true,
+					number: true,
+					status: true,
+					subtotalCents: true,
+					totalCents: true,
+					createdAt: true,
+					updatedAt: true,
+				},
+			});
 
-    const order = await app.prisma.order.findFirst({
-      where: { id, tenantId },
-      select: {
-        id: true,
-        tenantId: true,
-        number: true,
-        status: true,
-        subtotalCents: true,
-        totalCents: true,
-        createdAt: true,
-        updatedAt: true,
-        items: {
-          select: {
-            id: true,
-            productId: true,
-            productName: true,
-            qty: true,
-            unitPriceCents: true,
-            lineTotalCents: true,
-            createdAt: true,
-          },
-          orderBy: { createdAt: "asc" },
-        },
-      },
-    });
+			return reply.status(201).send(order);
+		},
+	);
 
-    if (!order) throw notFound("Order not found");
-    return order;
-  });
+	// GET /orders (ADMIN|MANAGER|STAFF)
+	app.get(
+		"/orders",
+		{
+			preHandler: async (req) =>
+				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
+		},
+		async (req) => {
+			const { tenantId } = getAuth(req);
+			const q = ListOrdersQuery.parse(req.query);
 
-  // POST /orders/:id/items (ADMIN|MANAGER)
-  app.post(
-    "/orders/:id/items",
-    { preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
-    async (req) => {
-      const { tenantId } = (req as any).auth;
-      const { id } = OrderIdParams.parse(req.params);
-      const body = AddItemBody.parse(req.body);
+			const where: any = { tenantId };
+			if (q.status) where.status = q.status;
+			if (q.from || q.to)
+				where.createdAt = {
+					...(q.from ? { gte: q.from } : {}),
+					...(q.to ? { lte: q.to } : {}),
+				};
 
-      const order = await app.prisma.order.findFirst({
-        where: { id, tenantId },
-        select: { id: true, status: true },
-      });
-      if (!order) throw notFound("Order not found");
-      if (order.status !== "DRAFT" && order.status !== "OPEN")
-        throw badRequest("Cannot add items in current status");
+			const skip = (q.page - 1) * q.pageSize;
+			const take = q.pageSize;
 
-      const product = await app.prisma.product.findFirst({
-        where: { id: body.productId, tenantId },
-        select: { id: true, name: true, priceCents: true, active: true },
-      });
-      if (!product) throw notFound("Product not found");
-      if (!product.active) throw badRequest("Product is inactive");
+			const [items, total] = await Promise.all([
+				app.prisma.order.findMany({
+					where,
+					orderBy: { createdAt: "desc" },
+					skip,
+					take,
+					select: {
+						id: true,
+						tenantId: true,
+						number: true,
+						status: true,
+						subtotalCents: true,
+						totalCents: true,
+						createdAt: true,
+						updatedAt: true,
+					},
+				}),
+				app.prisma.order.count({ where }),
+			]);
 
-      const lineTotal = product.priceCents * body.qty;
+			return { page: q.page, pageSize: q.pageSize, total, items };
+		},
+	);
 
-      const result = await app.prisma.$transaction(async (tx) => {
-        await tx.orderItem.create({
-          data: {
-            orderId: id,
-            tenantId,
-            productId: product.id,
-            productName: product.name,
-            qty: body.qty,
-            unitPriceCents: product.priceCents,
-            lineTotalCents: lineTotal,
-          },
-        });
+	// GET /orders/:id (ADMIN|MANAGER|STAFF)
+	app.get(
+		"/orders/:id",
+		{
+			preHandler: async (req) =>
+				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
+		},
+		async (req) => {
+			const { tenantId } = getAuth(req);
+			const { id } = OrderIdParams.parse(req.params);
 
-        await recalcTotals(tx, id, tenantId);
+			const order = await app.prisma.order.findFirst({
+				where: { id, tenantId },
+				select: {
+					id: true,
+					tenantId: true,
+					number: true,
+					status: true,
+					subtotalCents: true,
+					totalCents: true,
+					createdAt: true,
+					updatedAt: true,
+					items: {
+						select: {
+							id: true,
+							productId: true,
+							productName: true,
+							qty: true,
+							unitPriceCents: true,
+							lineTotalCents: true,
+							createdAt: true,
+						},
+						orderBy: { createdAt: "asc" },
+					},
+				},
+			});
 
-        const updated = await tx.order.findFirst({
-          where: { id, tenantId },
-          select: {
-            id: true,
-            tenantId: true,
-            number: true,
-            status: true,
-            subtotalCents: true,
-            totalCents: true,
-            createdAt: true,
-            updatedAt: true,
-            items: {
-              select: {
-                id: true,
-                productId: true,
-                productName: true,
-                qty: true,
-                unitPriceCents: true,
-                lineTotalCents: true,
-                createdAt: true,
-              },
-              orderBy: { createdAt: "asc" },
-            },
-          },
-        });
-        return updated!;
-      });
+			if (!order) throw notFound("Order not found");
+			return order;
+		},
+	);
 
-      return result;
-    },
-  );
+	// POST /orders/:id/items (ADMIN|MANAGER)
+	app.post(
+		"/orders/:id/items",
+		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
+		async (req) => {
+			const { tenantId } = getAuth(req);
+			const { id } = OrderIdParams.parse(req.params);
+			const body = AddItemBody.parse(req.body);
 
-  // PATCH /orders/:id/status (ADMIN|MANAGER)
-  app.patch(
-    "/orders/:id/status",
-    { preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
-    async (req) => {
-      const { tenantId, userId } = (req as any).auth;
-      const { id } = OrderIdParams.parse(req.params);
-      const { toStatus } = UpdateOrderStatusBody.parse(req.body);
+			const order = await app.prisma.order.findFirst({
+				where: { id, tenantId },
+				select: { id: true, status: true },
+			});
+			if (!order) throw notFound("Order not found");
+			if (order.status !== "DRAFT" && order.status !== "OPEN")
+				throw badRequest("Cannot add items in current status");
 
-      const order = await app.prisma.order.findFirst({
-        where: { id, tenantId },
-        select: { id: true, status: true },
-      });
-      if (!order) throw notFound("Order not found");
+			const product = await app.prisma.product.findFirst({
+				where: { id: body.productId, tenantId },
+				select: { id: true, name: true, priceCents: true, active: true },
+			});
+			if (!product) throw notFound("Product not found");
+			if (!product.active) throw badRequest("Product is inactive");
 
-      const from = order.status;
+			const lineTotal = product.priceCents * body.qty;
 
-      const allowed: Record<string, string[]> = {
-        DRAFT: ["OPEN", "CANCELED"],
-        OPEN: ["PAID", "CANCELED"],
-        PAID: [],
-        CANCELED: [],
-      };
+			const result = await app.prisma.$transaction(async (tx) => {
+				await assertOrderEditable(tx, id, tenantId);
 
-      if (!allowed[from]?.includes(toStatus)) {
-        throw badRequest("Invalid status transition");
-      }
+				await tx.orderItem.create({
+					data: {
+						orderId: id,
+						tenantId,
+						productId: product.id,
+						productName: product.name,
+						qty: body.qty,
+						unitPriceCents: product.priceCents,
+						lineTotalCents: lineTotal,
+					},
+				});
 
-      const updated = await app.prisma.$transaction(async (tx) => {
-        const o = await tx.order.update({
-          where: { id },
-          data: { status: toStatus },
-          select: {
-            id: true,
-            tenantId: true,
-            number: true,
-            status: true,
-            subtotalCents: true,
-            totalCents: true,
-            createdAt: true,
-            updatedAt: true,
-          },
-        });
+				await recalcTotals(tx, id, tenantId);
 
-        await tx.orderStatusHistory.create({
-          data: {
-            orderId: id,
-            tenantId,
-            fromStatus: from,
-            toStatus,
-            changedByUserId: userId,
-          },
-        });
+				const updated = await tx.order.findFirst({
+					where: { id, tenantId },
+					select: {
+						id: true,
+						tenantId: true,
+						number: true,
+						status: true,
+						subtotalCents: true,
+						totalCents: true,
+						createdAt: true,
+						updatedAt: true,
+						items: {
+							select: {
+								id: true,
+								productId: true,
+								productName: true,
+								qty: true,
+								unitPriceCents: true,
+								lineTotalCents: true,
+								createdAt: true,
+							},
+							orderBy: { createdAt: "asc" },
+						},
+					},
+				});
 
-        return o;
-      });
+				if (!updated) throw notFound("Order not found");
+				return updated;
+			});
 
-      return updated;
-    },
-  );
+			return result;
+		},
+	);
+
+	// PATCH /orders/:id/status (ADMIN|MANAGER)
+	app.patch(
+		"/orders/:id/status",
+		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
+		async (req) => {
+			const { tenantId, userId } = getAuth(req);
+			const { id } = OrderIdParams.parse(req.params);
+			const { toStatus } = UpdateOrderStatusBody.parse(req.body);
+
+			const order = await app.prisma.order.findFirst({
+				where: { id, tenantId },
+				select: { id: true, status: true },
+			});
+			if (!order) throw notFound("Order not found");
+
+			const from = order.status;
+
+			const allowed: Record<string, string[]> = {
+				DRAFT: ["OPEN", "CANCELED"],
+				OPEN: ["PAID", "CANCELED"],
+				PAID: [],
+				CANCELED: [],
+			};
+
+			if (!allowed[from]?.includes(toStatus)) {
+				throw badRequest("Invalid status transition");
+			}
+
+			const updated = await app.prisma.$transaction(async (tx) => {
+				// update atómico: solo si el status sigue siendo "from"
+				const res = await tx.order.updateMany({
+					where: { id, tenantId, status: from },
+					data: { status: toStatus },
+				});
+
+				if (res.count === 0) {
+					throw badRequest("Order status changed, retry");
+				}
+
+				const o = await tx.order.findFirst({
+					where: { id, tenantId },
+					select: {
+						id: true,
+						tenantId: true,
+						number: true,
+						status: true,
+						subtotalCents: true,
+						totalCents: true,
+						createdAt: true,
+						updatedAt: true,
+					},
+				});
+
+				if (!o) throw notFound("Order not found");
+
+				await tx.orderStatusHistory.create({
+					data: {
+						orderId: id,
+						tenantId,
+						fromStatus: from,
+						toStatus,
+						changedByUserId: userId,
+					},
+				});
+
+				return o;
+			});
+			return updated;
+		},
+	);
+
+	// PATCH /orders/:id/items/:itemId (ADMIN|MANAGER)
+	app.patch(
+		"/orders/:id/items/:itemId",
+		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
+		async (req) => {
+			const { tenantId } = getAuth(req);
+			const { id, itemId } = OrderItemIdParams.parse(req.params);
+			const body = UpdateItemBody.parse(req.body);
+
+			const order = await app.prisma.order.findFirst({
+				where: { id, tenantId },
+				select: { id: true, status: true },
+			});
+			if (!order) throw notFound("Order not found");
+			if (order.status !== "DRAFT" && order.status !== "OPEN")
+				throw badRequest("Cannot modify items in current status");
+
+			const item = await app.prisma.orderItem.findFirst({
+				where: { id: itemId, orderId: id, tenantId },
+				select: { id: true, unitPriceCents: true },
+			});
+			if (!item) throw notFound("Order item not found");
+
+			const newLineTotal = item.unitPriceCents * body.qty;
+
+			const result = await app.prisma.$transaction(async (tx) => {
+				await assertOrderEditable(tx, id, tenantId);
+
+				await tx.orderItem.update({
+					where: { id: itemId },
+					data: { qty: body.qty, lineTotalCents: newLineTotal },
+				});
+
+				await recalcTotals(tx, id, tenantId);
+
+				const updated = await tx.order.findFirst({
+					/* igual que ahora */
+				});
+				if (!updated) throw notFound("Order not found");
+				return updated;
+			});
+
+			return result;
+		},
+	);
+
+	// DELETE /orders/:id/items/:itemId (ADMIN|MANAGER)
+	app.delete(
+		"/orders/:id/items/:itemId",
+		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
+		async (req) => {
+			const { tenantId } = getAuth(req);
+			const { id, itemId } = OrderItemIdParams.parse(req.params);
+
+			const order = await app.prisma.order.findFirst({
+				where: { id, tenantId },
+				select: { id: true, status: true },
+			});
+			if (!order) throw notFound("Order not found");
+			if (order.status !== "DRAFT" && order.status !== "OPEN")
+				throw badRequest("Cannot modify items in current status");
+
+			const exists = await app.prisma.orderItem.findFirst({
+				where: { id: itemId, orderId: id, tenantId },
+				select: { id: true },
+			});
+			if (!exists) throw notFound("Order item not found");
+
+			const result = await app.prisma.$transaction(async (tx) => {
+				await assertOrderEditable(tx, id, tenantId);
+
+				await tx.orderItem.delete({ where: { id: itemId } });
+
+				await recalcTotals(tx, id, tenantId);
+
+				const updated = await tx.order.findFirst({
+					where: { id, tenantId },
+					select: {
+						id: true,
+						tenantId: true,
+						number: true,
+						status: true,
+						subtotalCents: true,
+						totalCents: true,
+						createdAt: true,
+						updatedAt: true,
+						items: {
+							select: {
+								id: true,
+								productId: true,
+								productName: true,
+								qty: true,
+								unitPriceCents: true,
+								lineTotalCents: true,
+								createdAt: true,
+							},
+							orderBy: { createdAt: "asc" },
+						},
+					},
+				});
+				if (!updated) throw notFound("Order not found");
+				return updated;
+			});
+
+			return result;
+		},
+	);
 };

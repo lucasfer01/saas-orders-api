@@ -258,6 +258,16 @@ Ejemplo:
 * `GET /products/:id` (ADMIN | MANAGER | STAFF)
 * `PATCH /products/:id` (ADMIN | MANAGER)
 
+### Orders (protegido, tenant-scoped)
+
+* `POST /orders` (ADMIN | MANAGER)
+* `GET /orders` (ADMIN | MANAGER | STAFF)
+* `GET /orders/:id` (ADMIN | MANAGER | STAFF)
+* `POST /orders/:id/items` (ADMIN | MANAGER)
+* `PATCH /orders/:id/items/:itemId` (ADMIN | MANAGER)
+* `DELETE /orders/:id/items/:itemId` (ADMIN | MANAGER)
+* `PATCH /orders/:id/status` (ADMIN | MANAGER)
+
 Headers esperados:
 
 ```http
@@ -305,16 +315,25 @@ npx biome check . --write
 
 ### 1) Orders API (core)
 
-* `POST /orders` (crear DRAFT con número por tenant)
-* `POST /orders/:id/items` (agregar ítems desde productos, snapshot de precio/nombre)
-* Recalcular `subtotalCents` y `totalCents`
-* `GET /orders` (paginación + filtros por status/fecha)
-* `GET /orders/:id` (detalle)
-* Status transitions:
+Implementado:
 
-  * DRAFT → OPEN
-  * OPEN → PAID
-  * OPEN → CANCELED
+* `POST /orders` (crea DRAFT con número por tenant)
+* `POST /orders/:id/items` (agrega ítems desde productos con snapshot)
+* `PATCH /orders/:id/items/:itemId` (actualiza qty del ítem y recalcula totales)
+* `DELETE /orders/:id/items/:itemId` (elimina ítem y recalcula totales)
+* `GET /orders` (paginación + filtros por status/fecha)
+* `GET /orders/:id` (detalle con items)
+* `PATCH /orders/:id/status` (transiciones válidas + auditoría)
+
+Transiciones de estado:
+
+* DRAFT → OPEN | CANCELED
+
+* OPEN → PAID | CANCELED
+
+* PAID → (sin transiciones)
+
+* CANCELED → (sin transiciones)
 
 ### 2) Status History automático
 
