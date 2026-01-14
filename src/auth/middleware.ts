@@ -1,15 +1,18 @@
 import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import fp from "fastify-plugin";
-import { ApiError } from "../http/errors.js";
+import {
+	forbidden as forbiddenErr,
+	unauthorized as unauthorizedErr,
+} from "../http/errors.js";
 import { verifyAccessToken } from "./jwt.js";
 
 function unauthorized(message = "Unauthorized") {
-	return new ApiError(401, "UNAUTHORIZED", message);
+	return unauthorizedErr(message);
 }
 
 function forbidden(message = "Forbidden") {
-	return new ApiError(403, "FORBIDDEN", message);
+	return forbiddenErr(message);
 }
 
 const authPluginImpl: FastifyPluginAsync = async (app) => {

@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../src/app.js";
+import { signAccessToken } from "../src/auth/jwt.js";
 
 const app = buildApp();
 
@@ -93,6 +94,32 @@ afterAll(async () => {
 });
 
 describe("orders module - hardening", () => {
+	it("auth required: GET/POST /orders y GET /orders/:id => 401", async () => {
+		const list = await app.inject({ method: "GET", url: "/orders" });
+		expect(list.statusCode).toBe(401);
+
+		const create = await app.inject({ method: "POST", url: "/orders", payload: {} });
+		expect(create.statusCode).toBe(401);
+
+		const detail = await app.inject({ method: "GET", url: "/orders/some-id" });
+		expect(detail.statusCode).toBe(401);
+	});
+
+	it("rbac: ADMIN puede crear y STAFF no (403)", async () => {
+		const reg = await app.inject({ method: "POST", url: "/auth/register", payload: { tenantName: `RBAC-Ord-${Date.now()}` , email: `admin+rbac@o.com`, password: "secret12345" } });
+		expect(reg.statusCode).toBe(201);
+		const { accessToken, user, tenant } = reg.json() as any;
+
+		// ADMIN crea OK
+		const ok = await app.inject({ method: "POST", url: "/orders", headers: { Authorization: `Bearer ${accessToken}` }, payload: {} });
+		expect(ok.statusCode).toBe(201);
+
+		// STAFF no puede
+		const staffToken = signAccessToken({ sub: user.id, tenantId: tenant.id, roles: ["STAFF"] });
+		const fail = await app.inject({ method: "POST", url: "/orders", headers: { Authorization: `Bearer ${staffToken}` }, payload: {} });
+		expect(fail.statusCode).toBe(403);
+	});
+
 	it("happy path: create product -> create order -> add item -> list", async () => {
 		const a = await registerTenant({
 			tenantName: "OrdersCo-A",
@@ -181,9 +208,22 @@ describe("orders module - hardening", () => {
 		expect(toPaid.statusCode).toBe(200);
 		expect((toPaid.json() as any).status).toBe("PAID");
 
+		// Invalid: DRAFT -> PAID directo
+		const a2 = await registerTenant({ tenantName: "Status-Invalid", email: "admin@statusinvalid.com", password: "secret12345" });
+		const oInv = await createOrder(a2.accessToken);
+		const d2p = await updateStatus(a2.accessToken, oInv.id, "PAID");
+		expect(d2p.statusCode).toBe(400);
+
 		// Invalid: PAID -> OPEN
 		const invalid = await updateStatus(a.accessToken, order.id, "OPEN");
 		expect(invalid.statusCode).toBe(400);
+		// Invalid: CANCELED -> OPEN
+		const a3 = await registerTenant({ tenantName: "Status-Cancel", email: "admin@statuscancel.com", password: "secret12345" });
+		const oc = await createOrder(a3.accessToken);
+		const toCanceled = await updateStatus(a3.accessToken, oc.id, "CANCELED");
+		expect(toCanceled.statusCode).toBe(200);
+		const backOpen = await updateStatus(a3.accessToken, oc.id, "OPEN");
+		expect(backOpen.statusCode).toBe(400);
 	});
 
 	it("items are blocked when status is PAID or CANCELED", async () => {
@@ -210,6 +250,30 @@ describe("orders module - hardening", () => {
 		// Now add item must fail
 		const addFail = await addItem(a.accessToken, order.id, { productId: product.id, qty: 1 });
 		expect(addFail.statusCode).toBe(400);
+
+		// Y también PATCH/DELETE deben fallar
+		const itemId = (paid.json() as any).items?.[0]?.id ?? (await (async () => {
+			const list = await getOrder(a.accessToken, order.id); return (list.json() as any).items[0].id; })());
+		const patchInPaid = await app.inject({ method: "PATCH", url: `/orders/${order.id}/items/${itemId}`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { qty: 2 } });
+		expect(patchInPaid.statusCode).toBe(400);
+		const delInPaid = await app.inject({ method: "DELETE", url: `/orders/${order.id}/items/${itemId}`, headers: { Authorization: `Bearer ${a.accessToken}` } });
+		expect(delInPaid.statusCode).toBe(400);
+
+		// CANCELED también bloquea
+		const aCancel = await registerTenant({ tenantName: "Lock-B", email: "admin@lockb.com", password: "secret12345" });
+		const prodB = await createProduct(aCancel.accessToken, { name: "LockedProductB", priceCents: 1500 });
+		const ordB = await createOrder(aCancel.accessToken);
+		const addB = await addItem(aCancel.accessToken, ordB.id, { productId: prodB.id, qty: 1 });
+		expect(addB.statusCode).toBe(200);
+		const toCanceledB = await updateStatus(aCancel.accessToken, ordB.id, "CANCELED");
+		expect(toCanceledB.statusCode).toBe(200);
+		const addInCanceled = await addItem(aCancel.accessToken, ordB.id, { productId: prodB.id, qty: 1 });
+		expect(addInCanceled.statusCode).toBe(400);
+		const itemIdB = (await getOrder(aCancel.accessToken, ordB.id)).json().items[0].id as string;
+		const patchCanceled = await app.inject({ method: "PATCH", url: `/orders/${ordB.id}/items/${itemIdB}`, headers: { Authorization: `Bearer ${aCancel.accessToken}` }, payload: { qty: 2 } });
+		expect(patchCanceled.statusCode).toBe(400);
+		const delCanceled = await app.inject({ method: "DELETE", url: `/orders/${ordB.id}/items/${itemIdB}`, headers: { Authorization: `Bearer ${aCancel.accessToken}` } });
+		expect(delCanceled.statusCode).toBe(400);
 	});
 
 	it("filters: list orders by status", async () => {
@@ -243,13 +307,65 @@ describe("orders module - hardening", () => {
 			email: "admin@vala.com",
 			password: "secret12345",
 		});
-
 		const product = await createProduct(a.accessToken, { name: "ValProduct", priceCents: 100 });
 		const order = await createOrder(a.accessToken);
 
 		const res = await addItem(a.accessToken, order.id, { productId: product.id, qty: 0 });
-		// Si tu Zod valida, debería ser 400
-		expect(res.statusCode).toBe(400);
+		// Zod validation debe devolver 422
+		expect(res.statusCode).toBe(422);
+	});
+
+	it("items: update qty recalculates totals", async () => {
+		const a = await registerTenant({ tenantName: `Up-${Date.now()}`, email: `admin@up.com`, password: "secret12345" });
+		const product = await createProduct(a.accessToken, { name: "U-Prod", priceCents: 300 });
+		const order = await createOrder(a.accessToken);
+		const add = await addItem(a.accessToken, order.id, { productId: product.id, qty: 2 });
+		expect(add.statusCode).toBe(200);
+		const itemId = (add.json() as any).items[0].id as string;
+
+		const patch = await app.inject({ method: "PATCH", url: `/orders/${order.id}/items/${itemId}`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { qty: 3 } });
+		expect(patch.statusCode).toBe(200);
+		const patched = patch.json() as any;
+		expect(patched.items[0].lineTotalCents).toBe(300 * 3);
+		expect(patched.totalCents).toBe(300 * 3);
+	});
+
+	it("items: delete recalculates totals a 0", async () => {
+		const a = await registerTenant({ tenantName: `Del-${Date.now()}`, email: `admin@del.com`, password: "secret12345" });
+		const product = await createProduct(a.accessToken, { name: "D-Prod", priceCents: 200 });
+		const order = await createOrder(a.accessToken);
+		const add = await addItem(a.accessToken, order.id, { productId: product.id, qty: 2 });
+		expect(add.statusCode).toBe(200);
+		const itemId = (add.json() as any).items[0].id as string;
+
+		const del = await app.inject({ method: "DELETE", url: `/orders/${order.id}/items/${itemId}`, headers: { Authorization: `Bearer ${a.accessToken}` } });
+		expect(del.statusCode).toBe(200);
+		const after = del.json() as any;
+		expect(after.items.length).toBe(0);
+		expect(after.subtotalCents).toBe(0);
+		expect(after.totalCents).toBe(0);
+	});
+
+	it("items validations: product not found, item not found PATCH/DELETE", async () => {
+		const a = await registerTenant({ tenantName: `Val2-${Date.now()}`, email: `admin@val2.com`, password: "secret12345" });
+		const order = await createOrder(a.accessToken);
+		const add404 = await addItem(a.accessToken, order.id, { productId: "non-existent", qty: 1 });
+		expect(add404.statusCode).toBe(404);
+
+		const patch404 = await app.inject({ method: "PATCH", url: `/orders/${order.id}/items/some-item`, headers: { Authorization: `Bearer ${a.accessToken}` }, payload: { qty: 2 } });
+		expect([404, 400]).toContain(patch404.statusCode);
+		const del404 = await app.inject({ method: "DELETE", url: `/orders/${order.id}/items/some-item`, headers: { Authorization: `Bearer ${a.accessToken}` } });
+		expect([404, 400]).toContain(del404.statusCode);
+	});
+
+	it("create order: fields defaults y number incrementa en el tenant", async () => {
+		const a = await registerTenant({ tenantName: `Num-${Date.now()}`, email: `admin@num.com`, password: "secret12345" });
+		const o1 = await createOrder(a.accessToken);
+		const o2 = await createOrder(a.accessToken);
+		expect(o1.status).toBe("DRAFT");
+		expect(o1.subtotalCents).toBe(0);
+		expect(o1.totalCents).toBe(0);
+		expect(o2.number).toBe(o1.number + 1);
 	});
 
 	it("writes OrderStatusHistory audit rows on status change", async () => {

@@ -24,6 +24,13 @@ enum PaymentStatus {
   FAILED
 }
 
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  OTHER
+}
+
 enum PaymentProvider {
   MOCK
 }
@@ -44,6 +51,7 @@ model Tenant {
   products     Product[]
   orders       Order[]
   outboxEvents OutboxEvent[]
+  payments     Payment[]
 }
 
 model User {
@@ -168,16 +176,21 @@ model OrderStatusHistory {
 
 model Payment {
   id             String          @id @default(cuid())
+  tenantId       String
   orderId        String
   provider       PaymentProvider @default(MOCK)
   status         PaymentStatus   @default(PENDING)
   amountCents    Int
   idempotencyKey String
   createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  method         PaymentMethod
 
-  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  order  Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
-  @@unique([orderId, idempotencyKey])
+  @@unique([tenantId, idempotencyKey])
+  @@index([tenantId])
   @@index([status])
   @@index([createdAt])
 }
