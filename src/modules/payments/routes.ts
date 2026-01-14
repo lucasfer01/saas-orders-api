@@ -96,6 +96,15 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 			try {
 				const created = await app.prisma.$transaction(
 					async (tx: Prisma.TransactionClient) => {
+						// Evitar doble cobro: si ya existe un pago SUCCEEDED para esta orden en este tenant
+						const existingSucceeded = await tx.payment.findFirst({
+							where: { tenantId, orderId, status: "SUCCEEDED" },
+							select: { id: true },
+						});
+						if (existingSucceeded) {
+							throw badRequest("Order already has a successful payment");
+						}
+
 						// Intentar crear Payment (PENDING)
 						const payment = await tx.payment.create({
 							data: {
@@ -157,6 +166,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 										paymentId: payment.id,
 										amountCents: payment.amountCents,
 										method: payment.method,
+										occurredAt: new Date().toISOString(),
 									},
 									status: "PENDING",
 								},
