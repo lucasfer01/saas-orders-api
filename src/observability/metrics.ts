@@ -48,7 +48,11 @@ register.registerMetric(paymentRequestsTotal);
 register.registerMetric(paymentIdempotentReplayTotal);
 
 function routeLabel(req: FastifyRequest) {
-	return (req as any).routerPath || req.routeOptions?.url || req.url;
+	return (
+		(req as FastifyRequest & { routerPath?: string }).routerPath ||
+		req.routeOptions?.url ||
+		req.url
+	);
 }
 
 const metricsPluginImpl: FastifyPluginAsync = async (app) => {
@@ -57,13 +61,19 @@ const metricsPluginImpl: FastifyPluginAsync = async (app) => {
 			method: req.method,
 			route: routeLabel(req),
 		});
-		(req as any).__metricsEnd = end;
+		(
+			req as FastifyRequest & {
+				__metricsEnd?: (labels?: Record<string, string>) => void;
+			}
+		).__metricsEnd = end;
 	});
 
 	app.addHook("onResponse", async (req, reply) => {
-		const end = (req as any).__metricsEnd as
-			| ((labels?: Record<string, string>) => void)
-			| undefined;
+		const end = (
+			req as FastifyRequest & {
+				__metricsEnd?: (labels?: Record<string, string>) => void;
+			}
+		).__metricsEnd;
 		try {
 			httpRequestsTotal.inc({
 				method: req.method,

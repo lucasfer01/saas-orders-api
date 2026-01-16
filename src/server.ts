@@ -1,6 +1,7 @@
 import { buildApp } from "./app.js";
 import { env } from "./config/env.js";
 import { setupTracing, shutdownTracing } from "./observability/tracing.js";
+
 const app = buildApp();
 
 async function main() {

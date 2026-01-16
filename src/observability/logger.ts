@@ -1,9 +1,9 @@
+import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
-import { trace, SpanStatusCode, SpanKind } from "@opentelemetry/api";
 import { env } from "../config/env.js";
 
-type AuthContext = NonNullable<FastifyRequest["auth"]>;
+//
 
 const startHrTime = Symbol("startHrTime");
 const reqSpanSymbol = Symbol("reqSpan");
@@ -19,7 +19,10 @@ export type LogContext = {
 
 export function getLogContext(req: FastifyRequest): LogContext {
 	const auth = req.auth;
-	const route = (req as any).routerPath || req.routeOptions?.url || req.url;
+	const route =
+		(req as FastifyRequest & { routerPath?: string }).routerPath ||
+		req.routeOptions?.url ||
+		req.url;
 	return {
 		requestId: req.id,
 		method: req.method,
@@ -40,7 +43,8 @@ function sanitizeError(err: unknown) {
 const loggerPluginImpl: FastifyPluginAsync = async (app) => {
 	app.addHook("onRequest", async (req) => {
 		// marcar inicio de request
-		(req as any)[startHrTime] = process.hrtime.bigint();
+		(req as FastifyRequest & Record<PropertyKey, unknown>)[startHrTime] =
+			process.hrtime.bigint();
 		// log de inicio minimal
 		const ctx = getLogContext(req);
 		app.log.info({ ...ctx }, "request start");
@@ -58,12 +62,20 @@ const loggerPluginImpl: FastifyPluginAsync = async (app) => {
 					})()
 				: [hostHeader, undefined];
 			const serverAddress =
-				hostFromHeader || (req as any).hostname || undefined;
+				hostFromHeader ||
+				(req as FastifyRequest & { hostname?: string }).hostname ||
+				undefined;
 			const serverPort =
-				portFromHeader || (req.socket as any)?.localPort || undefined;
-			const httpScheme = (req as any).protocol || undefined;
-			const peerIp = (req as any).ip as string | undefined;
-			const peerPort = (req.socket as any)?.remotePort as number | undefined;
+				portFromHeader ||
+				(req.socket as { localPort?: number } | undefined)?.localPort ||
+				undefined;
+			const httpScheme =
+				(req as FastifyRequest & { protocol?: string }).protocol || undefined;
+			const peerIp = (req as FastifyRequest & { ip?: string }).ip as
+				| string
+				| undefined;
+			const peerPort = (req.socket as { remotePort?: number } | undefined)
+				?.remotePort as number | undefined;
 			const userAgent =
 				typeof req.headers["user-agent"] === "string"
 					? req.headers["user-agent"]
@@ -85,12 +97,15 @@ const loggerPluginImpl: FastifyPluginAsync = async (app) => {
 					"saas.user_id": ctx.userId ?? "",
 				},
 			});
-			(req as any)[reqSpanSymbol] = span;
+			(req as FastifyRequest & Record<PropertyKey, unknown>)[reqSpanSymbol] =
+				span;
 		}
 	});
 
 	app.addHook("onResponse", async (req, reply) => {
-		const start = (req as any)[startHrTime] as bigint | undefined;
+		const start = (req as FastifyRequest & Record<PropertyKey, unknown>)[
+			startHrTime
+		] as bigint | undefined;
 		const tookMs = start
 			? Number((process.hrtime.bigint() - start) / 1_000_000n)
 			: undefined;
@@ -104,7 +119,9 @@ const loggerPluginImpl: FastifyPluginAsync = async (app) => {
 			"request end",
 		);
 
-		const span = (req as any)[reqSpanSymbol];
+		const span = (req as FastifyRequest & Record<PropertyKey, unknown>)[
+			reqSpanSymbol
+		];
 		if (span) {
 			try {
 				span.setAttribute("http.status_code", reply.statusCode);
@@ -125,7 +142,9 @@ const loggerPluginImpl: FastifyPluginAsync = async (app) => {
 			"request error",
 		);
 
-		const span = (req as any)[reqSpanSymbol];
+		const span = (req as FastifyRequest & Record<PropertyKey, unknown>)[
+			reqSpanSymbol
+		];
 		if (span) {
 			try {
 				span.setStatus({

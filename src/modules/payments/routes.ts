@@ -1,13 +1,13 @@
+import { trace } from "@opentelemetry/api";
 import { Prisma } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import { env } from "../../config/env.js";
-import {
-	paymentRequestsTotal,
-	paymentIdempotentReplayTotal,
-} from "../../observability/metrics.js";
-import { trace } from "@opentelemetry/api";
 import { badRequest, conflict, notFound } from "../../http/errors.js";
+import {
+	paymentIdempotentReplayTotal,
+	paymentRequestsTotal,
+} from "../../observability/metrics.js";
 import {
 	CreatePaymentBody,
 	ListPaymentsQuery,

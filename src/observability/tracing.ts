@@ -1,10 +1,10 @@
-import { env } from "../config/env.js";
-import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api";
-import { NodeSDK } from "@opentelemetry/sdk-node";
-import { Resource } from "@opentelemetry/resources";
-import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
-import { ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
+import { DiagConsoleLogger, DiagLogLevel, diag } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { Resource } from "@opentelemetry/resources";
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { ConsoleSpanExporter } from "@opentelemetry/sdk-trace-base";
+import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
+import { env } from "../config/env.js";
 
 let sdk: NodeSDK | undefined;
 

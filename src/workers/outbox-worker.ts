@@ -1,5 +1,7 @@
+import { pathToFileURL } from "node:url";
+import { trace } from "@opentelemetry/api";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { type OutboxEvent, PrismaClient } from "@prisma/client";
+import { type OutboxEvent, type Prisma, PrismaClient } from "@prisma/client";
 import Redis from "ioredis";
 import pino from "pino";
 import { env } from "../config/env.js";
@@ -7,9 +9,7 @@ import {
 	outboxEventsTotal,
 	outboxPendingCount,
 } from "../observability/metrics.js";
-import { trace } from "@opentelemetry/api";
 import { setupTracing, shutdownTracing } from "../observability/tracing.js";
-import { pathToFileURL } from "node:url";
 
 export type RunOutboxResult = {
 	locked: boolean;
@@ -94,7 +94,7 @@ export async function runOutboxOnce(options?: {
 						attempts: nextAttempts,
 						lastError: (err?.message || String(err)).slice(0, 1000),
 						status: failed ? "FAILED" : "PENDING",
-					} as any,
+					} as unknown as Prisma.OutboxEventUpdateInput,
 				});
 				outboxEventsTotal.inc({
 					type: ev.type,
