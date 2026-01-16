@@ -79,11 +79,17 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 					tokenHash: "pending", // se setea después
 					expiresAt: new Date(
 						Date.now() +
-							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86400_000,
+							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86_400_000,
 					),
 				},
 				select: { id: true, expiresAt: true },
 			});
+
+			// Log de evento clave (sin secretos)
+			app.log.info(
+				{ tenantId: result.tenant.id, userId: result.user.id },
+				"auth register success",
+			);
 
 			const refreshToken = signRefreshToken({
 				sub: result.user.id,
@@ -151,7 +157,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 					tokenHash: "pending",
 					expiresAt: new Date(
 						Date.now() +
-							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86400_000,
+							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86_400_000,
 					),
 				},
 				select: { id: true },
@@ -173,6 +179,12 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 				tenantId: user.tenantId,
 				roles,
 			});
+
+			// Log de evento clave (sin secretos)
+			app.log.info(
+				{ tenantId: user.tenantId, userId: user.id },
+				"auth login success",
+			);
 
 			return { accessToken, refreshToken };
 		},
@@ -246,7 +258,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 					tokenHash: "pending",
 					expiresAt: new Date(
 						Date.now() +
-							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86400_000,
+							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86_400_000,
 					),
 				},
 				select: { id: true },
@@ -269,6 +281,12 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 				roles,
 			});
 
+			// Log de evento clave (sin secretos)
+			app.log.info(
+				{ tenantId: user.tenantId, userId: user.id },
+				"auth refresh success",
+			);
+
 			return { accessToken: newAccessToken, refreshToken: newRefreshToken };
 		},
 	);
@@ -282,6 +300,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 			payload = verifyRefreshToken(body.refreshToken);
 		} catch {
 			// logout idempotente
+			app.log.info({}, "auth logout idempotent");
 			return { ok: true };
 		}
 
@@ -289,6 +308,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 			where: { id: payload.tokenId, revokedAt: null },
 			data: { revokedAt: new Date() },
 		});
+
+		app.log.info({}, "auth logout success");
 
 		return { ok: true };
 	});
