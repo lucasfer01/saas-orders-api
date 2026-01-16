@@ -1,120 +1,154 @@
+# TASK: Observability P1 — Prometheus + Grafana (local) + minimal dashboards + docs
 
----
+Context:
+We already have in the API:
+- GET /metrics (Prometheus exposition format via prom-client)
+- Metrics include:
+  - http_requests_total{method,route,status}
+  - http_request_duration_ms_bucket{method,route}
+  - outbox_pending_count
+  - payment_requests_total{status}
+  - payment_idempotent_replay_total
+- Logging exists, tracing is optional (OTEL_ENABLED).
 
-## 2) Prompt detallado para Copilot (módulo “Observabilidad + Operación (P0)”)
+Goal:
+Add a local observability stack so we can run Prometheus + Grafana and visualize:
+- RPS global and per route
+- Error rate (4xx/5xx)
+- Latency p95/p99 by route
+- Payments succeeded/failed rate
+- Outbox pending gauge and processed rate (if there is a counter)
+Additionally add docs and a smoke test (optional but recommended).
 
-Copiá y pegá esto en Copilot. Está escrito para que Copilot “sepa” qué tocar, qué crear, y cuándo considerar el módulo terminado.
+Constraints:
+- No breaking changes to API runtime. Only add infra files + docs + (optionally) minor code improvements if needed.
+- Keep everything simple and “demo-ready”: one command to boot API + prometheus + grafana locally.
+- Use docker-compose. Prefer a new file to not affect other compose setups:
+  - docker-compose.observability.yml (or compose/observability.yml).
+- Assume API runs on host at http://host.docker.internal:3001 (Windows/Mac) OR run the API in docker too. Prefer the approach that works on Windows easily.
+- Do NOT require Kubernetes.
+- Keep dashboards and provisioning versioned in repo (no manual clicking needed).
 
-```text
-Quiero implementar el módulo “Observabilidad + Operación (P0)” en este repo Fastify + TS + Prisma (multi-tenant). Ya existen: auth, products, orders, payments (idempotencia), hardening v1 (helmet/rate-limit/error shape), outbox mínimo + worker con lock redis, y CI.
+Deliverables (files to create/modify):
 
-Objetivo: convertir el servicio en “operable”: poder diagnosticar fallas/latencias y correlacionar flujos (request → DB → payment → outbox). No usar any, mantener tipado estricto y mantener el shape estándar de errores.
+1) docker-compose for Prometheus + Grafana
+- File: docker-compose.observability.yml
+- Services:
+  - prometheus (prom/prometheus)
+  - grafana (grafana/grafana)
+- Add named volumes for persistence:
+  - prometheus_data
+  - grafana_data
+- Expose ports:
+  - Prometheus: 9090
+  - Grafana: 3000
+- Prometheus config mounted read-only.
+- Grafana provisioning folders mounted read-only.
+- Default Grafana admin creds for local only:
+  - admin / admin (or admin / admin123, but document it)
+- Network: a single bridge network is fine.
 
-REQUERIMIENTOS FUNCIONALES (P0)
+2) Prometheus config
+- File: observability/prometheus/prometheus.yml
+- Scrape interval: 5s or 10s.
+- One scrape job named "saas-orders-api".
+- Target should work on Windows:
+  Option A (recommended): host.docker.internal:3001
+  - metrics_path: /metrics
+  - static_configs: targets: ["host.docker.internal:3001"]
+  Add a note in README about Linux needing an alternative (or use extra_hosts on Linux).
+- Also scrape prometheus itself.
 
-A) Logging estructurado + correlación
-1) Cada request debe tener un requestId consistente:
-   - Usar el request id de Fastify (req.id) o generar uno si no existe.
-   - Incluirlo en logs de inicio/fin de request y en logs de errores.
-2) Logging estructurado (JSON) con al menos estos campos:
-   - requestId, method, url/route, statusCode, responseTimeMs
-   - tenantId y userId si req.auth existe
-   - errorCode (si hubo error) y message
-3) En rutas sensibles (auth/login, payments), loggear eventos clave SIN filtrar secretos:
-   - No loggear tokens, passwords, refreshTokens, ni Authorization headers completos.
-4) En el worker de outbox:
-   - Log por evento procesado: outboxEventId, type, attempt, status transition (PENDING->PROCESSED/FAILED)
-   - Loggear duración por batch y cantidad procesada.
-5) Mantener logs compatibles con CI (stdout).
+3) Grafana provisioning (datasource + dashboards)
+- Directory: observability/grafana/provisioning/
+  - datasources/datasource.yml
+  - dashboards/dashboards.yml
+- Datasource:
+  - name: Prometheus
+  - type: prometheus
+  - url: http://prometheus:9090
+  - isDefault: true
+- Dashboards provisioning:
+  - point to observability/grafana/dashboards/*.json
 
-Implementación sugerida:
-- Un plugin o helper central para “request logging” usando hooks:
-  - onRequest (marcar start)
-  - onResponse (log de fin con latency)
-  - onError (log de error)
-- Función helper getLogContext(req) que derive tenantId/userId (si req.auth) y requestId.
-- Asegurar que el error handler estándar agregue requestId opcional en response SOLO si lo decidimos (si no, mantener response actual).
+4) Grafana dashboard JSON (minimal but useful)
+- File: observability/grafana/dashboards/saas-orders-api.json
+- Create ONE dashboard with panels for:
+  A) RPS global:
+     Query: sum(rate(http_requests_total[1m]))
+  B) RPS per route (top routes):
+     Query: topk(10, sum by (route) (rate(http_requests_total[1m])))
+  C) Error rate 5xx (global):
+     Query: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
+  D) Error rate 4xx (global) (optional but recommended):
+     Query: sum(rate(http_requests_total{status=~"4.."}[5m])) / sum(rate(http_requests_total[5m]))
+  E) Latency p95 by route:
+     Query: histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_ms_bucket[5m])))
+  F) Latency p99 by route:
+     Query: histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_ms_bucket[5m])))
+  G) Payments: SUCCEEDED rate:
+     Query: sum(rate(payment_requests_total{status="SUCCEEDED"}[5m]))
+  H) Payments: FAILED rate:
+     Query: sum(rate(payment_requests_total{status="FAILED"}[5m]))
+  I) Payment idempotent replays rate:
+     Query: sum(rate(payment_idempotent_replay_total[5m]))
+  J) Outbox pending gauge:
+     Query: outbox_pending_count
+  K) Outbox processed rate:
+     If outbox_events_total exists with labels, prefer:
+       sum(rate(outbox_events_total[5m]))
+     Otherwise, document that it’s not available and leave the panel hidden or omit.
 
-B) Métricas (Prometheus-style)
-1) Exponer endpoint GET /metrics (sin auth por ahora o protegido por env flag; elegir opción más simple).
-2) Métricas mínimas:
-   - http_requests_total{method, route, status}
-   - http_request_duration_ms_bucket{method, route} (histograma o summary)
-   - outbox_events_total{type, status} (processed/failed)
-   - outbox_pending_count (gauge)
-3) En payments:
-   - payment_requests_total{status} (SUCCEEDED/FAILED)
-   - payment_idempotent_replay_total
-4) Implementar con librería estándar (prom-client) o alternativa ligera.
-5) Agregar tests:
-   - /metrics responde 200 y contiene al menos http_requests_total
-   - Un request a /health incrementa el contador (si el test es determinístico; si no, testear solo existencia).
+Dashboard quality requirements:
+- Titles for panels must be clear.
+- Units:
+  - RPS: requests/sec
+  - error rate: percent
+  - latency: milliseconds (if the histogram is in ms; otherwise adjust)
+- Use dashboard variables (optional) like route if easy, but not required.
+- Ensure it loads automatically on Grafana startup via provisioning.
 
-C) Tracing (OpenTelemetry) — mínimo viable (P0)
-1) Instrumentar tracing para:
-   - Requests HTTP (Fastify)
-   - Prisma (si viable con instrumentación; si no, spans manuales alrededor de transacciones importantes: payments, status change, outbox insert)
-   - Worker outbox (span por batch + span por evento)
-2) Exporter:
-   - Para P0 usar console exporter o OTLP configurable por env (OTEL_EXPORTER_OTLP_ENDPOINT)
-3) Context propagation:
-   - Cada request debe crear un root span con attributes: tenantId, userId, route, method.
-4) No bloquear el performance: tracing debe poder apagarse por env (OTEL_ENABLED=false).
+5) README updates
+- Add a new section:
+  ## Observability (local)
+  - Explain what /metrics is
+  - How to run:
+    - Start API: npm run dev
+    - Start stack: docker compose -f docker-compose.observability.yml up -d
+  - Access:
+    - Prometheus http://localhost:9090
+    - Grafana http://localhost:3000 (credentials)
+  - Troubleshooting:
+    - Windows: host.docker.internal should work.
+    - Linux: either run API in docker or set extra_hosts / use host network (mention briefly).
+  - Mention that /metrics may be left unprotected locally but should be protected in prod (reverse proxy, auth, IP allowlist).
 
-D) Outbox worker hardening (P0)
-1) Extender OutboxEvent con:
-   - attempts: Int default 0
-   - lastError: String? (limitada o truncada)
-   - nextRunAt: DateTime? (opcional)
-   - status: PENDING | PROCESSED | FAILED
-2) Procesamiento:
-   - En cada intento fallido: attempts++, lastError set, y si attempts >= MAX_ATTEMPTS => status=FAILED, si no queda PENDING.
-   - MAX_ATTEMPTS configurable por env (OUTBOX_MAX_ATTEMPTS default 5).
-3) Lock:
-   - Mantener lock redis global.
-   - Asegurar release del lock en finally.
-4) Métricas/logs:
-   - Incrementar outbox_events_total{type,status} y loggear transitions.
-5) Tests:
-   - Caso “process ok”: marca PROCESSED.
-   - Caso “process falla”: attempts incrementa y termina FAILED al superar max.
-   - Testear que lock evita doble ejecución (si es complejo, al menos test de que si lock no se adquiere, no procesa).
+6) Optional: “metrics smoke test” in Vitest
+- Create test file: tests/metrics.test.ts
+- It should:
+  - build app
+  - call GET /metrics
+  - assert status 200
+  - assert body includes at least:
+    - "http_requests_total"
+    - "http_request_duration_ms"
+    - "outbox_pending_count"
+  - then call GET /health or another endpoint and re-fetch /metrics to ensure counters change:
+    - e.g. after hitting /health, expect metrics contains a line with route="/health" and method="GET"
+- Keep it robust (avoid flakiness): just check substring presence.
 
-E) Tests + helpers (P0)
-1) Refactor tests existentes para usar helpers:
-   - createApp() o buildApp() ya existe; crear helpers en tests/_helpers.ts:
-     - registerTenantAndLogin(app) -> { tenantId, token, refreshToken? }
-     - createProduct(app, token, {name, priceCents}) -> product
-     - createOrder(app, token) -> order
-     - addOrderItem(app, token, orderId, productId, qty) -> order detail
-2) Test de concurrencia de idempotencia en payments:
-   - Disparar 2 requests en paralelo al mismo endpoint POST /orders/:id/payments con MISMO idempotencyKey.
-   - Esperar: misma respuesta (mismo paymentId) y en DB solo 1 Payment y 1 OutboxEvent (si aplica).
-3) Test multi-tenant isolation mínimo:
-   - Tenant A crea producto/orden/pago.
-   - Tenant B no puede acceder: GET /payments/:paymentId => 404 (o 403 según estándar, pero consistente) y GET /orders/:id => 404/403.
-4) Mantener Biome/lint sin any.
+Acceptance criteria:
+- Running:
+  - npm run dev
+  - docker compose -f docker-compose.observability.yml up -d
+  Then:
+  - Prometheus shows target "saas-orders-api" UP
+  - Grafana auto-provisions datasource and dashboard (no manual setup)
+  - Dashboard panels show data after making API requests
+- README has clear instructions.
+- Lint/test still pass.
 
-REQUERIMIENTOS NO FUNCIONALES
-- Mantener error responses estándar.
-- No introducir “console.log” sueltos; usar logger estándar.
-- No loggear secretos.
-- Código modular: plugins en src/plugins o src/observability.
-- Todo debe pasar: typecheck, lint, tests.
-- Actualizar README con:
-  - Sección Observabilidad (logging, metrics, tracing)
-  - Cómo activar/desactivar tracing
-  - Variables de entorno nuevas:
-    OTEL_ENABLED, OTEL_EXPORTER_OTLP_ENDPOINT (si aplica), OUTBOX_MAX_ATTEMPTS
-  - Endpoint /metrics documentado
-  - Nueva semántica de outbox attempts/FAILED
-
-ENTREGABLES (Done Definition)
-- /metrics funcionando y testeado
-- logs con requestId + tenantId/userId visibles en requests protegidos
-- tracing mínimo implementado y apagable por env
-- outbox worker con attempts y FAILED
-- tests refactorizados con helpers + test de concurrencia idempotencia + test multi-tenant access
-- README actualizado con todo lo anterior
-
-Implementá los cambios donde corresponda en este repo (plugins, app bootstrap, worker, schema/migrations, tests).
+Implementation notes:
+- Ensure docker-compose YAML uses correct syntax (no deprecated version field).
+- Keep paths consistent with repo structure.
+- If http_request_duration_ms_bucket is in seconds instead of ms, adjust panel unit and queries accordingly and document it.

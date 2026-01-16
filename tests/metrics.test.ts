@@ -12,14 +12,25 @@ afterAll(async () => {
 });
 
 describe("metrics", () => {
-  it("exposes /metrics with http_requests_total", async () => {
-    // trigger a request to have some metrics
+  it("exposes /metrics and includes key metrics + route labels", async () => {
+    // Primer fetch para validar endpoint y contenido base
+    const res1 = await app.inject({ method: "GET", url: "/metrics" });
+    expect(res1.statusCode).toBe(200);
+    const body1 = res1.body as string;
+    expect(body1).toContain("http_requests_total");
+    expect(body1).toContain("http_request_duration_ms");
+    expect(body1).toContain("outbox_pending_count");
+
+    // Ejecutamos /health para generar métricas etiquetadas por ruta
     const health = await app.inject({ method: "GET", url: "/health" });
     expect(health.statusCode).toBe(200);
 
-    const res = await app.inject({ method: "GET", url: "/metrics" });
-    expect(res.statusCode).toBe(200);
-    const body = res.body as string;
-    expect(body).toContain("http_requests_total");
+    // Segundo fetch para observar etiquetas de la request previa
+    const res2 = await app.inject({ method: "GET", url: "/metrics" });
+    expect(res2.statusCode).toBe(200);
+    const body2 = res2.body as string;
+    // Presencia de etiquetas method y route; comprobación robusta por substring
+    expect(body2).toContain('method="GET"');
+    expect(body2).toContain('route="/health"');
   });
 });

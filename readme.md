@@ -82,13 +82,10 @@ El foco del proyecto es tener un **core técnico completo** (seguridad, multi-te
 
 ## Observabilidad (P0)
 
-- Logging estructurado: plugin `observability/logger.ts` agrega logs JSON por request con `requestId`, `method`, `route`, `statusCode`, `responseTimeMs` y, si existen, `tenantId`/`userId`. No se logean secretos.
-- Métricas Prometheus: `GET /metrics` expone métricas estándar usando `prom-client`:
   - `http_requests_total{method,route,status}`
   - `http_request_duration_ms_bucket{method,route}` (histograma)
   - `outbox_events_total{type,status}` y `outbox_pending_count`
   - `payment_requests_total{status}` y `payment_idempotent_replay_total`
-- Tracing (OpenTelemetry): `observability/tracing.ts` inicializa tracer con exporter de consola u OTLP (configurable). Controlado por `OTEL_ENABLED`.
 
 Cómo activar tracing
 
@@ -97,24 +94,14 @@ Cómo activar tracing
 
 Endpoint `/metrics`
 
-- Sin autenticación por defecto. Integrá con Prometheus apuntando a `http://HOST:PORT/metrics`.
 
 Outbox worker (hardening)
 
-- `OutboxEvent` ahora tiene `attempts` (Int, default 0), `lastError` (String?) y `nextRunAt` (DateTime?).
-- Reintentos hasta `OUTBOX_MAX_ATTEMPTS` (default 5). En cada fallo: `attempts++`, `lastError`, y transición a `FAILED` al superar el máximo; si no, queda `PENDING`.
-- Lock global en Redis asegurando `finally` para liberar.
-- Métricas y logs por batch/evento.
 
----
 
 ## Requisitos
 
 - Node.js (recomendado: LTS / Node 20+)
-- PostgreSQL corriendo local (por ejemplo vía Docker)
-- Redis (recomendado si usás outbox/worker; en CI se usa)
-
----
 
 ## Variables de entorno
 
@@ -132,7 +119,6 @@ JWT_ACCESS_SECRET="your_access_secret"
 JWT_REFRESH_SECRET="your_refresh_secret"
 JWT_ACCESS_TTL_MIN=15
 JWT_REFRESH_TTL_DAYS=14
-
 # App
 NODE_ENV=development
 PORT=3001

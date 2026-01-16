@@ -36,6 +36,7 @@ const EnvSchema = z.object({
 		.transform(Boolean),
 	OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
 	OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
+	METRICS_TOKEN: z.string().optional(),
 });
 
 const parsed = EnvSchema.parse(process.env);
