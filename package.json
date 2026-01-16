@@ -17,7 +17,8 @@
 		"test:watch": "vitest -w",
 		"test:coverage": "vitest run --coverage",
 		"coverage:ci": "vitest run --coverage",
-		"outbox:run": "tsx src/workers/outbox-worker.ts"
+		"outbox:run": "tsx src/workers/outbox-worker.ts",
+		"verify": "tsx scripts/verify-before-push.ts"
 	},
 	"dependencies": {
 		"@fastify/helmet": "^13.0.0",

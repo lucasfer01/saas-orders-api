@@ -1,6 +1,7 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import promClient from "prom-client";
+import { env } from "../config/env.js";
 
 const register = new promClient.Registry();
 promClient.collectDefaultMetrics({ register });
@@ -86,6 +87,17 @@ const metricsPluginImpl: FastifyPluginAsync = async (app) => {
 	});
 
 	app.get("/metrics", async (_req, reply) => {
+		// Protección opcional por token estático
+		if (env.METRICS_TOKEN) {
+			const token = _req.headers["x-metrics-token"];
+			const tokenStr = Array.isArray(token) ? token[0] : token;
+			if (tokenStr !== env.METRICS_TOKEN) {
+				return reply.status(403).send({
+					error: { code: "FORBIDDEN", message: "Invalid metrics token" },
+				});
+			}
+		}
+
 		const body = await register.metrics();
 		reply.header("Content-Type", register.contentType);
 		return reply.send(body);

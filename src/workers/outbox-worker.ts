@@ -33,11 +33,13 @@ export async function runOutboxOnce(options?: {
 		level: env.NODE_ENV === "production" ? "info" : "debug",
 	});
 
+	let acquiredLock = false;
 	try {
 		const lock = await redis.set(LOCK_KEY, "1", "EX", LOCK_TTL_SEC, "NX");
 		if (lock !== "OK") {
 			return { locked: true, processed: 0, tookMs: Date.now() - start };
 		}
+		acquiredLock = true;
 
 		const events: OutboxEvent[] = await prisma.outboxEvent.findMany({
 			where: { status: "PENDING" },
@@ -65,6 +67,27 @@ export async function runOutboxOnce(options?: {
 				const evSpan = tracer.startSpan("outbox.event", {
 					attributes: { type: ev.type },
 				});
+				// Simulación de fallo para tests (no afecta producción)
+				// Helper para detectar flag de fallo en payload JSON sin usar `any`
+				const hasTestFailFlag = (
+					val: Prisma.JsonValue | undefined,
+				): boolean => {
+					if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+						const obj = val as Prisma.JsonObject;
+						return obj.testFail === true;
+					}
+					return false;
+				};
+
+				if (
+					env.NODE_ENV === "test" &&
+					(ev.type === "TEST_FAIL" ||
+						hasTestFailFlag(
+							(ev as unknown as { payloadJson?: Prisma.JsonValue }).payloadJson,
+						))
+				) {
+					throw new Error("outbox test failure");
+				}
 				const attempts = (ev as unknown as { attempts?: number }).attempts ?? 0;
 				logger.info(
 					{ outboxEventId: ev.id, type: ev.type, attempt: attempts },
@@ -113,8 +136,20 @@ export async function runOutboxOnce(options?: {
 		}
 		batchSpan.end();
 
+		// Resumen de batch
+		const took = Date.now() - start;
+		logger.info(
+			{ fetched: events.length, processed, batchSize, tookMs: took },
+			"outbox: batch finished",
+		);
+
 		return { locked: false, processed, tookMs: Date.now() - start };
 	} finally {
+		try {
+			if (acquiredLock) {
+				await redis.del(LOCK_KEY);
+			}
+		} catch {}
 		try {
 			await redis.quit();
 		} catch {

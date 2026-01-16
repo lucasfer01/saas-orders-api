@@ -103,7 +103,8 @@ describe("outbox worker", () => {
     const stillOne = await app.prisma.outboxEvent.count({ where: { tenantId: reg.tenant.id, type: "PAYMENT_SUCCEEDED", status: "PENDING", createdAt: { gt: before } } });
     expect(stillOne).toBe(1);
 
-    // worker procesa
+    // worker procesa (asegurar que no haya un lock residual de otras pruebas)
+    await app.redis.del("outbox:lock");
     const res = await runOutboxOnce({ batchSize: 1000 });
     expect(res.locked).toBe(false);
     expect(res.processed).toBeGreaterThanOrEqual(1);
