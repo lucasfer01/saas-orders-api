@@ -68,11 +68,23 @@ export async function runOutboxOnce(options?: {
 					attributes: { type: ev.type },
 				});
 				// Simulación de fallo para tests (no afecta producción)
+				// Helper para detectar flag de fallo en payload JSON sin usar `any`
+				const hasTestFailFlag = (
+					val: Prisma.JsonValue | undefined,
+				): boolean => {
+					if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+						const obj = val as Prisma.JsonObject;
+						return obj.testFail === true;
+					}
+					return false;
+				};
+
 				if (
 					env.NODE_ENV === "test" &&
 					(ev.type === "TEST_FAIL" ||
-						(ev as unknown as { payloadJson?: any })?.payloadJson?.testFail ===
-							true)
+						hasTestFailFlag(
+							(ev as unknown as { payloadJson?: Prisma.JsonValue }).payloadJson,
+						))
 				) {
 					throw new Error("outbox test failure");
 				}

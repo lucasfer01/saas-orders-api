@@ -92,9 +92,9 @@ const metricsPluginImpl: FastifyPluginAsync = async (app) => {
 			const token = _req.headers["x-metrics-token"];
 			const tokenStr = Array.isArray(token) ? token[0] : token;
 			if (tokenStr !== env.METRICS_TOKEN) {
-				return reply
-					.status(403)
-					.send({ error: { code: "FORBIDDEN", message: "Invalid metrics token" } });
+				return reply.status(403).send({
+					error: { code: "FORBIDDEN", message: "Invalid metrics token" },
+				});
 			}
 		}
 
