@@ -14,6 +14,8 @@ import { productsRoutes } from "./modules/products/routes.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { redisPlugin } from "./plugins/redis.js";
 import { healthRoutes } from "./routes/health.js";
+import { loggerPlugin } from "./observability/logger.js";
+import { metricsPlugin } from "./observability/metrics.js";
 
 export function buildApp() {
 	const app = Fastify({
@@ -121,6 +123,10 @@ export function buildApp() {
 
 	app.register(prismaPlugin);
 	app.register(redisPlugin);
+
+	// Observability plugins
+	app.register(loggerPlugin);
+	app.register(metricsPlugin);
 
 	app.register(authPlugin); // antes de rutas protegidas
 	app.register(authRoutes);

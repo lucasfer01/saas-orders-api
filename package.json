@@ -30,7 +30,16 @@
 		"ioredis": "^5.9.1",
 		"jsonwebtoken": "^9.0.3",
 		"pg": "^8.16.3",
-		"zod": "^4.3.5"
+		"zod": "^4.3.5",
+		"prom-client": "^15.1.2",
+		"@opentelemetry/api": "^1.9.0",
+		"@opentelemetry/sdk-trace-node": "^1.26.0",
+		"@opentelemetry/sdk-trace-base": "^1.26.0",
+		"@opentelemetry/resources": "^1.26.0",
+		"@opentelemetry/semantic-conventions": "^1.26.0",
+		"@opentelemetry/exporter-trace-otlp-http": "^0.53.0",
+		"@opentelemetry/sdk-node": "^0.53.0",
+		"pino": "^9.4.0"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "^2.3.11",

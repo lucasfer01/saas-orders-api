@@ -1,0 +1,6 @@
+-- AlterTable
+ALTER TABLE "OutboxEvent" ALTER COLUMN "nextRunAt" SET DATA TYPE TIMESTAMP(3);
+
+-- AlterTable
+ALTER TABLE "Payment" ALTER COLUMN "updatedAt" DROP DEFAULT,
+ALTER COLUMN "method" DROP DEFAULT;
