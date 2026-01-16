@@ -1,8 +1,13 @@
+import { trace } from "@opentelemetry/api";
 import { Prisma } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import { env } from "../../config/env.js";
 import { badRequest, conflict, notFound } from "../../http/errors.js";
+import {
+	paymentIdempotentReplayTotal,
+	paymentRequestsTotal,
+} from "../../observability/metrics.js";
 import {
 	CreatePaymentBody,
 	ListPaymentsQuery,
@@ -73,6 +78,11 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 					existingFast.amountCents === body.amountCents &&
 					existingFast.method === body.method
 				) {
+					paymentIdempotentReplayTotal.inc();
+					app.log.info(
+						{ paymentId: existingFast.id, orderId, tenantId },
+						"payment idempotent replay",
+					);
 					return reply.status(200).send(existingFast);
 				}
 				throw conflict("Idempotency key already used with different payload");
@@ -94,14 +104,47 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 
 			// Idempotencia + transacción: crear PENDING y resolver dentro de la misma tx
 			try {
+				const tracer = trace.getTracer("saas-orders-api");
 				const created = await app.prisma.$transaction(
 					async (tx: Prisma.TransactionClient) => {
-						// Evitar doble cobro: si ya existe un pago SUCCEEDED para esta orden en este tenant
+						const span = tracer.startSpan("payment.create");
+						// Idempotencia dentro de la transacción para evitar carreras
+						const existingByKey = await tx.payment.findFirst({
+							where: { tenantId, idempotencyKey: body.idempotencyKey },
+							select: {
+								id: true,
+								tenantId: true,
+								orderId: true,
+								amountCents: true,
+								method: true,
+								status: true,
+								idempotencyKey: true,
+								createdAt: true,
+								updatedAt: true,
+							},
+						});
+						if (existingByKey) {
+							if (
+								existingByKey.orderId === orderId &&
+								existingByKey.amountCents === body.amountCents &&
+								existingByKey.method === body.method
+							) {
+								span.end();
+								return existingByKey;
+							}
+							span.end();
+							throw conflict(
+								"Idempotency key already used with different payload",
+							);
+						}
+
+						// Evitar doble cobro si ya hay SUCCEEDED distinto a esta key
 						const existingSucceeded = await tx.payment.findFirst({
 							where: { tenantId, orderId, status: "SUCCEEDED" },
 							select: { id: true },
 						});
 						if (existingSucceeded) {
+							span.end();
 							throw badRequest("Order already has a successful payment");
 						}
 
@@ -188,11 +231,19 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 								updatedAt: true,
 							},
 						});
-						if (!result) throw notFound("Payment not found");
+						if (!result) {
+							span.end();
+							throw notFound("Payment not found");
+						}
+						span.end();
 						return result;
 					},
 				);
-
+				paymentRequestsTotal.inc({ status: created.status });
+				app.log.info(
+					{ paymentId: created.id, orderId, tenantId, status: created.status },
+					"payment processed",
+				);
 				return reply.status(201).send(created);
 			} catch (err) {
 				if (isUniqueViolation(err)) {
@@ -217,10 +268,17 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 						existing.amountCents === body.amountCents &&
 						existing.method === body.method
 					) {
+						paymentIdempotentReplayTotal.inc();
+						app.log.info(
+							{ paymentId: existing.id, orderId, tenantId },
+							"payment idempotent replay",
+						);
 						return reply.status(200).send(existing);
 					}
 					throw conflict("Idempotency key already used with different payload");
 				}
+				// Aumentar métrica por fallo
+				paymentRequestsTotal.inc({ status: "FAILED" });
 				throw err;
 			}
 		},

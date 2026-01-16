@@ -30,6 +30,12 @@ const EnvSchema = z.object({
 		.int()
 		.min(1)
 		.default(60_000),
+	OTEL_ENABLED: z
+		.union([z.string().transform((v) => v === "true"), z.boolean()])
+		.default(false)
+		.transform(Boolean),
+	OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional(),
+	OUTBOX_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
 });
 
 const parsed = EnvSchema.parse(process.env);

@@ -201,6 +201,9 @@ model OutboxEvent {
   type        String
   payloadJson Json
   status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  lastError   String?
+  nextRunAt   DateTime?
   createdAt   DateTime     @default(now())
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
