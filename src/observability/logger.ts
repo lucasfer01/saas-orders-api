@@ -1,5 +1,5 @@
-import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { Span } from "@opentelemetry/api";
+import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import { env } from "../config/env.js";
