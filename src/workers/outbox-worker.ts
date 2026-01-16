@@ -6,6 +6,7 @@ import { env } from "../config/env.js";
 import { outboxEventsTotal, outboxPendingCount } from "../observability/metrics.js";
 import { trace } from "@opentelemetry/api";
 import { setupTracing, shutdownTracing } from "../observability/tracing.js";
+import { pathToFileURL } from "node:url";
 
 export type RunOutboxResult = {
 	locked: boolean;
@@ -97,7 +98,7 @@ export async function runOutboxOnce(options?: {
 }
 
 // Ejecutable manual
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	setupTracing();
 	runOutboxOnce()
 		.then((r) => {

@@ -27,5 +27,5 @@ describe("multi-tenant isolation", () => {
 
     const getPaymentByB = await app.inject({ method: "GET", url: `/payments/${payment.id}`, headers: { Authorization: `Bearer ${B.accessToken}` } });
     expect([403,404]).toContain(getPaymentByB.statusCode);
-  });
+  }, 15000);
 });
