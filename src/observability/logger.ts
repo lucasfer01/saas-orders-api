@@ -1,4 +1,5 @@
 import { SpanKind, SpanStatusCode, trace } from "@opentelemetry/api";
+import type { Span } from "@opentelemetry/api";
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import { env } from "../config/env.js";
@@ -121,7 +122,7 @@ const loggerPluginImpl: FastifyPluginAsync = async (app) => {
 
 		const span = (req as FastifyRequest & Record<PropertyKey, unknown>)[
 			reqSpanSymbol
-		];
+		] as Span | undefined;
 		if (span) {
 			try {
 				span.setAttribute("http.status_code", reply.statusCode);
@@ -144,7 +145,7 @@ const loggerPluginImpl: FastifyPluginAsync = async (app) => {
 
 		const span = (req as FastifyRequest & Record<PropertyKey, unknown>)[
 			reqSpanSymbol
-		];
+		] as Span | undefined;
 		if (span) {
 			try {
 				span.setStatus({
