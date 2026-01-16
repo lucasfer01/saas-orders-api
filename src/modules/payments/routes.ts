@@ -2,7 +2,10 @@ import { Prisma } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import { env } from "../../config/env.js";
-import { paymentRequestsTotal, paymentIdempotentReplayTotal } from "../../observability/metrics.js";
+import {
+	paymentRequestsTotal,
+	paymentIdempotentReplayTotal,
+} from "../../observability/metrics.js";
 import { trace } from "@opentelemetry/api";
 import { badRequest, conflict, notFound } from "../../http/errors.js";
 import {
@@ -76,7 +79,10 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 					existingFast.method === body.method
 				) {
 					paymentIdempotentReplayTotal.inc();
-					app.log.info({ paymentId: existingFast.id, orderId, tenantId }, "payment idempotent replay");
+					app.log.info(
+						{ paymentId: existingFast.id, orderId, tenantId },
+						"payment idempotent replay",
+					);
 					return reply.status(200).send(existingFast);
 				}
 				throw conflict("Idempotency key already used with different payload");
@@ -127,7 +133,9 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 								return existingByKey;
 							}
 							span.end();
-							throw conflict("Idempotency key already used with different payload");
+							throw conflict(
+								"Idempotency key already used with different payload",
+							);
 						}
 
 						// Evitar doble cobro si ya hay SUCCEEDED distinto a esta key
@@ -232,7 +240,10 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 					},
 				);
 				paymentRequestsTotal.inc({ status: created.status });
-				app.log.info({ paymentId: created.id, orderId, tenantId, status: created.status }, "payment processed");
+				app.log.info(
+					{ paymentId: created.id, orderId, tenantId, status: created.status },
+					"payment processed",
+				);
 				return reply.status(201).send(created);
 			} catch (err) {
 				if (isUniqueViolation(err)) {
@@ -258,7 +269,10 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 						existing.method === body.method
 					) {
 						paymentIdempotentReplayTotal.inc();
-						app.log.info({ paymentId: existing.id, orderId, tenantId }, "payment idempotent replay");
+						app.log.info(
+							{ paymentId: existing.id, orderId, tenantId },
+							"payment idempotent replay",
+						);
 						return reply.status(200).send(existing);
 					}
 					throw conflict("Idempotency key already used with different payload");
