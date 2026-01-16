@@ -1,6 +1,6 @@
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
-import { trace, SpanStatusCode } from "@opentelemetry/api";
+import { trace, SpanStatusCode, SpanKind } from "@opentelemetry/api";
 import { env } from "../config/env.js";
 
 type AuthContext = NonNullable<FastifyRequest["auth"]>;
@@ -48,10 +48,33 @@ const loggerPluginImpl: FastifyPluginAsync = async (app) => {
     // Tracing root span por request
     if (env.OTEL_ENABLED) {
       const tracer = trace.getTracer("saas-orders-api");
+      const hostHeader = typeof req.headers.host === "string" ? req.headers.host : undefined;
+      const [hostFromHeader, portFromHeader] = hostHeader?.includes(":")
+        ? ((): [string | undefined, number | undefined] => {
+            const [h, p] = hostHeader.split(":");
+            const n = Number(p);
+            return [h, Number.isNaN(n) ? undefined : n];
+          })()
+        : [hostHeader, undefined];
+      const serverAddress = hostFromHeader || (req as any).hostname || undefined;
+      const serverPort = portFromHeader || (req.socket as any)?.localPort || undefined;
+      const httpScheme = (req as any).protocol || undefined;
+      const peerIp = (req as any).ip as string | undefined;
+      const peerPort = (req.socket as any)?.remotePort as number | undefined;
+      const userAgent = typeof req.headers["user-agent"] === "string" ? req.headers["user-agent"] : undefined;
+
       const span = tracer.startSpan("http.request", {
+        kind: SpanKind.SERVER,
         attributes: {
           "http.method": req.method,
           "http.route": ctx.route,
+          "http.target": req.url,
+          "http.scheme": httpScheme ?? "",
+          "server.address": serverAddress ?? "",
+          "server.port": serverPort ?? undefined,
+          "net.peer.ip": peerIp ?? "",
+          "net.peer.port": peerPort ?? undefined,
+          "user_agent.original": userAgent ?? "",
           "saas.tenant_id": ctx.tenantId ?? "",
           "saas.user_id": ctx.userId ?? "",
         },
