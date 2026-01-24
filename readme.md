@@ -94,8 +94,66 @@ Cómo activar tracing
 
 Endpoint `/metrics`
 
+- Expuesto por la API: `GET /metrics` (Prometheus `prom-client`).
+- Para correr Prometheus + Grafana localmente: `docker compose -f docker-compose.observability.yml up -d`.
+- Detalles y dashboard incluidos: ver `docs/observability-local.md`.
+- En Windows/Mac, Prometheus scrapea a `host.docker.internal:3001/metrics`.
+
 
 Outbox worker (hardening)
+
+- Comando: `npm run outbox:run`.
+- Requiere Redis y Postgres levantados (ver `docker-compose.yml`).
+- Procesa eventos `OutboxEvent` en estado `PENDING → PROCESSED` con lock global en Redis.
+- Parámetros: `OUTBOX_MAX_ATTEMPTS` (reintentos). En producción, usar un scheduler/queue dedicado.
+
+---
+
+## Primeros pasos (setup rápido)
+
+1. Pre-requisitos
+  - Node.js 20+
+  - Docker (para Postgres/Redis y observabilidad)
+
+2. Infra local (DB + Redis)
+  - `docker compose up -d`
+  - DB expuesta en `localhost:9876` (usuario/password/db: `app`)
+
+3. Variables de entorno
+  - Crear `.env` con los campos del bloque más abajo (DB/Redis/JWT/etc.).
+
+4. Prisma
+  - `npm run prisma:generate`
+  - `npm run prisma:migrate`
+
+5. Ejecutar API en modo dev
+  - `npm run dev`
+  - Healthcheck: `GET http://localhost:3001/health`
+
+6. (Opcional) Observabilidad local
+  - `docker compose -f docker-compose.observability.yml up -d`
+  - Prometheus: `http://localhost:9090` | Grafana: `http://localhost:3000`
+
+7. (Opcional) Prisma Studio
+  - `npm run prisma:studio` (si falla, corré antes `npm run prisma:generate`).
+
+---
+
+## Testing
+
+- Unit/E2E: `npm test`
+- Watch: `npm run test:watch`
+- Cobertura: `npm run test:coverage` (report en `coverage/`)
+
+---
+
+## Scripts útiles
+
+- `npm run dev`: servidor en watch (`src/server.ts`).
+- `npm run build` / `npm start`: build y ejecución de `dist/`.
+- `npm run lint` / `npm run format`: chequeo y formato (Biome).
+- `npm run prisma:migrate` / `npm run prisma:generate` / `npm run prisma:studio`: ciclo Prisma.
+- `npm run outbox:run`: ejecuta el worker de outbox.
 
 
 
