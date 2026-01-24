@@ -36,6 +36,61 @@ El foco del proyecto es tener un **core técnico completo** (seguridad, multi-te
   - procesamiento **transaccional**
   - transición atómica de `Order` a `PAID` cuando el pago `SUCCEEDED`
   - listado y detalle de pagos
+
+- **Módulo Receipts** (protegido + tenant-scoped):
+  - `POST /orders/:id/receipt` genera un recibo para una orden pagada (idempotente, por orderId)
+  - `GET /orders/:id/receipt` obtiene el recibo de una orden
+  - `GET /receipts/:id` obtiene un recibo por id
+  - `GET /receipts` lista recibos (paginado, por tenant, con filtros de fecha)
+  - `PATCH /receipts/:id/void` anula un recibo (idempotente)
+  - Todos los endpoints usan validación Zod y shape de error `{ error: { code, message } }`
+  - Numeración incremental por tenant (`number`)
+  - Idempotencia: crear dos veces el mismo recibo para una orden devuelve el mismo objeto (200 OK)
+  - Métricas: `receipt_issued_total`, `receipt_voided_total`
+  - Cobertura de tests receipts: 100% de paths críticos, incluyendo idempotencia y void
+
+**Ejemplo de uso:**
+
+```http
+POST /orders/:id/receipt
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{
+  "currency": "USD"
+}
+```
+
+**Respuestas posibles:**
+
+- 200 OK (recibo creado o ya existente)
+- 400 { "error": { "code": "ORDER_NOT_PAID", "message": "Order not paid" } }
+- 404 { "error": { "code": "ORDER_NOT_FOUND", "message": "Order not found" } }
+
+**Ejemplo de recibo:**
+
+```json
+{
+  "id": "rec_...",
+  "tenantId": "...",
+  "orderId": "...",
+  "number": 12,
+  "status": "ISSUED",
+  "currency": "USD",
+  "subtotalCents": 1000,
+  "totalCents": 1200,
+  "items": [
+    { "name": "Producto A", "qty": 2, "unitPriceCents": 500, "lineTotalCents": 1000 }
+  ],
+  "issuedAt": "2026-01-24T12:00:00.000Z"
+}
+```
+
+**Notas:**
+- Todos los endpoints receipts son tenant-scoped y requieren autenticación.
+- El shape de error es siempre JSON, nunca texto plano.
+- El endpoint de void es idempotente: si el recibo ya está anulado, devuelve 200 y el objeto receipt.
+
 - **Hardening v1**:
   - Headers de seguridad via `@fastify/helmet`
   - Rate limiting global y por rutas sensibles (`@fastify/rate-limit`)

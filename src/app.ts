@@ -1,6 +1,7 @@
 // ...existing code...
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import fastifyCors from '@fastify/cors';
 import { Prisma } from "@prisma/client";
 import type { FastifyRequest } from "fastify";
 import Fastify from "fastify";
@@ -93,6 +94,13 @@ export function buildApp() {
 		return reply.status(500).send({
 			error: { code: "INTERNAL_ERROR", message: "Unexpected error" },
 		});
+	});
+
+	// CORS
+	app.register(fastifyCors, {
+		origin: 'http://localhost:8080',
+		methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+		credentials: true
 	});
 
 	// Security headers
