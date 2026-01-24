@@ -1,3 +1,11 @@
+function hasStatusCode(obj: unknown): obj is { statusCode: number } {
+	return (
+		typeof obj === "object" &&
+		obj !== null &&
+		"statusCode" in obj &&
+		typeof (obj as { statusCode: unknown }).statusCode === "number"
+	);
+}
 // Receipts metrics
 export const receiptIssuedTotal = new promClient.Counter({
 	name: "receipt_issued_total",
@@ -13,7 +21,6 @@ export const receiptVoidedTotal = new promClient.Counter({
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import promClient from "prom-client";
-import { env } from "../config/env.js";
 
 const register = new promClient.Registry();
 promClient.collectDefaultMetrics({ register });
@@ -65,8 +72,12 @@ register.registerMetric(receiptVoidedTotal);
 
 function routeLabel(req: FastifyRequest) {
 	// Si la respuesta será 404, devolver 'unmatched' como label
-	const reply = (req as any).raw?.__metricsReply;
-	if (reply && reply.statusCode === 404) return "unmatched";
+	const reply = (
+		req as { raw?: { __metricsReply?: unknown; statusCode?: number } }
+	).raw?.__metricsReply;
+	if (hasStatusCode(reply) && reply.statusCode === 404) {
+		return "unmatched";
+	}
 	if ((req as FastifyRequest & { routerPath?: string }).routerPath) {
 		return (req as FastifyRequest & { routerPath?: string }).routerPath;
 	}
@@ -79,7 +90,7 @@ function routeLabel(req: FastifyRequest) {
 const metricsPluginImpl: FastifyPluginAsync = async (app) => {
 	app.addHook("onRequest", async (req, reply) => {
 		// Guardar referencia a reply para saber el status en el label
-		(req as any).raw.__metricsReply = reply;
+		(req as { raw: { __metricsReply?: unknown } }).raw.__metricsReply = reply;
 		// Si la ruta no existe, usar 'unmatched' en el label del histograma
 		const is404 = reply && reply.statusCode === 404;
 		const route = is404 ? "unmatched" : routeLabel(req);

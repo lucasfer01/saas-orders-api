@@ -246,44 +246,44 @@ export const paymentsRoutes: FastifyPluginAsync = async (app) => {
 				);
 				return reply.status(201).send(created);
 			} catch (err) {
-				   if (isUniqueViolation(err)) {
-					   // Idempotencia: buscar por (tenantId, idempotencyKey) y devolver 200
-					   let existing = null;
-					   const maxRetries = 3;
-					   for (let i = 0; i < maxRetries; i++) {
-						   existing = await app.prisma.payment.findFirst({
-							   where: { tenantId, idempotencyKey: body.idempotencyKey },
-							   select: {
-								   id: true,
-								   tenantId: true,
-								   orderId: true,
-								   amountCents: true,
-								   method: true,
-								   status: true,
-								   idempotencyKey: true,
-								   createdAt: true,
-								   updatedAt: true,
-							   },
-						   });
-						   if (existing) break;
-						   // Esperar 30ms antes de reintentar
-						   await new Promise((res) => setTimeout(res, 30));
-					   }
-					   if (!existing) throw notFound("Payment not found");
-					   if (
-						   existing.orderId === orderId &&
-						   existing.amountCents === body.amountCents &&
-						   existing.method === body.method
-					   ) {
-						   paymentIdempotentReplayTotal.inc();
-						   app.log.info(
-							   { paymentId: existing.id, orderId, tenantId },
-							   "payment idempotent replay",
-						   );
-						   return reply.status(200).send(existing);
-					   }
-					   throw conflict("Idempotency key already used with different payload");
-				   }
+				if (isUniqueViolation(err)) {
+					// Idempotencia: buscar por (tenantId, idempotencyKey) y devolver 200
+					let existing = null;
+					const maxRetries = 3;
+					for (let i = 0; i < maxRetries; i++) {
+						existing = await app.prisma.payment.findFirst({
+							where: { tenantId, idempotencyKey: body.idempotencyKey },
+							select: {
+								id: true,
+								tenantId: true,
+								orderId: true,
+								amountCents: true,
+								method: true,
+								status: true,
+								idempotencyKey: true,
+								createdAt: true,
+								updatedAt: true,
+							},
+						});
+						if (existing) break;
+						// Esperar 30ms antes de reintentar
+						await new Promise((res) => setTimeout(res, 30));
+					}
+					if (!existing) throw notFound("Payment not found");
+					if (
+						existing.orderId === orderId &&
+						existing.amountCents === body.amountCents &&
+						existing.method === body.method
+					) {
+						paymentIdempotentReplayTotal.inc();
+						app.log.info(
+							{ paymentId: existing.id, orderId, tenantId },
+							"payment idempotent replay",
+						);
+						return reply.status(200).send(existing);
+					}
+					throw conflict("Idempotency key already used with different payload");
+				}
 				// Aumentar métrica por fallo
 				paymentRequestsTotal.inc({ status: "FAILED" });
 				throw err;

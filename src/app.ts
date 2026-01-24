@@ -1,3 +1,4 @@
+// ...existing code...
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import { Prisma } from "@prisma/client";
@@ -11,12 +12,12 @@ import { authRoutes } from "./modules/auth/routes.js";
 import { ordersRoutes } from "./modules/orders/routes.js";
 import { paymentsRoutes } from "./modules/payments/routes.js";
 import { productsRoutes } from "./modules/products/routes.js";
+import receiptsRoutes from "./modules/receipts/routes.js";
 import { loggerPlugin } from "./observability/logger.js";
 import { metricsPlugin } from "./observability/metrics.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { redisPlugin } from "./plugins/redis.js";
 import { healthRoutes } from "./routes/health.js";
-import receiptsRoutes from "./modules/receipts/routes.js";
 
 export function buildApp() {
 	const app = Fastify({
@@ -133,7 +134,6 @@ export function buildApp() {
 	app.register(authRoutes);
 
 	app.register(productsRoutes);
-
 
 	app.register(ordersRoutes);
 	app.register(receiptsRoutes);
