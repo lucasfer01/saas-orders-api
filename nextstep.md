@@ -1,154 +1,54 @@
-# TASK: Observability P1 — Prometheus + Grafana (local) + minimal dashboards + docs
+Act as a senior backend engineer. We have a Fastify + TypeScript + Prisma API with Prometheus metrics exposed at GET /metrics using prom-client. We also have structured logging, outbox worker with Redis lock, and payments idempotency metrics.
 
-Context:
-We already have in the API:
-- GET /metrics (Prometheus exposition format via prom-client)
-- Metrics include:
-  - http_requests_total{method,route,status}
-  - http_request_duration_ms_bucket{method,route}
-  - outbox_pending_count
-  - payment_requests_total{status}
-  - payment_idempotent_replay_total
-- Logging exists, tracing is optional (OTEL_ENABLED).
+Goal (this module): “Observability hardening v1.1” focused on securing /metrics for production, preventing Prometheus label cardinality explosions, and adding integration tests to prove correct behavior.
 
-Goal:
-Add a local observability stack so we can run Prometheus + Grafana and visualize:
-- RPS global and per route
-- Error rate (4xx/5xx)
-- Latency p95/p99 by route
-- Payments succeeded/failed rate
-- Outbox pending gauge and processed rate (if there is a counter)
-Additionally add docs and a smoke test (optional but recommended).
+Constraints / context:
+- Fastify v5 app with modular plugins and modules (src/app.ts composes plugins + routes).
+- Observability files exist under src/observability/* (logger, metrics, tracing).
+- Metrics currently include: http_requests_total{method,route,status}, http_request_duration_ms histogram, outbox metrics, payment metrics.
+- Local docs say /metrics may be unprotected locally; in prod we want METRICS_TOKEN and X-Metrics-Token header.
+- Keep error responses standardized: { error: { code, message, details? } }.
+- Tests use Vitest with app.inject (integration style). CI runs tests.
 
-Constraints:
-- No breaking changes to API runtime. Only add infra files + docs + (optionally) minor code improvements if needed.
-- Keep everything simple and “demo-ready”: one command to boot API + prometheus + grafana locally.
-- Use docker-compose. Prefer a new file to not affect other compose setups:
-  - docker-compose.observability.yml (or compose/observability.yml).
-- Assume API runs on host at http://host.docker.internal:3001 (Windows/Mac) OR run the API in docker too. Prefer the approach that works on Windows easily.
-- Do NOT require Kubernetes.
-- Keep dashboards and provisioning versioned in repo (no manual clicking needed).
+Deliverables:
+1) Secure /metrics with optional token:
+   - If env METRICS_TOKEN is NOT set: /metrics is public (current behavior).
+   - If env METRICS_TOKEN IS set:
+     - Require header X-Metrics-Token to match METRICS_TOKEN.
+     - If missing/invalid -> 401 with standardized body:
+       { error: { code: "UNAUTHORIZED", message: "Unauthorized" } }
+   - Do NOT require JWT auth for /metrics.
+   - Ensure response content-type remains Prometheus text format and body remains the metrics output.
 
-Deliverables (files to create/modify):
+2) Prevent high-cardinality “route” labels:
+   - For matched routes, label must be Fastify routerPath / routeOptions.url (e.g. "/orders/:id/payments"), not raw req.url.
+   - For unmatched routes (404), set route label to a constant like "unmatched" (NOT the raw URL path).
+   - Make sure metrics still record status codes for 404s.
 
-1) docker-compose for Prometheus + Grafana
-- File: docker-compose.observability.yml
-- Services:
-  - prometheus (prom/prometheus)
-  - grafana (grafana/grafana)
-- Add named volumes for persistence:
-  - prometheus_data
-  - grafana_data
-- Expose ports:
-  - Prometheus: 9090
-  - Grafana: 3000
-- Prometheus config mounted read-only.
-- Grafana provisioning folders mounted read-only.
-- Default Grafana admin creds for local only:
-  - admin / admin (or admin / admin123, but document it)
-- Network: a single bridge network is fine.
+3) Tests (create a new test file tests/observability.test.ts or similar):
+   - Test A: GET /metrics returns 200 and contains at least one of each core metric names:
+     http_requests_total, http_request_duration_ms, payment_requests_total, payment_idempotent_replay_total.
+   - Test B: When METRICS_TOKEN is set (set process.env in test before buildApp()):
+     - GET /metrics without header => 401 and standardized error body.
+     - GET /metrics with X-Metrics-Token correct => 200.
+   - Test C: Trigger a 404 by requesting GET /does-not-exist and then GET /metrics:
+     - Assert there is a http_requests_total sample for status="404" and route="unmatched" (or whatever constant you chose).
+     - Confirm it does NOT include raw path "/does-not-exist" as a route label.
+   - Keep tests deterministic and fast.
 
-2) Prometheus config
-- File: observability/prometheus/prometheus.yml
-- Scrape interval: 5s or 10s.
-- One scrape job named "saas-orders-api".
-- Target should work on Windows:
-  Option A (recommended): host.docker.internal:3001
-  - metrics_path: /metrics
-  - static_configs: targets: ["host.docker.internal:3001"]
-  Add a note in README about Linux needing an alternative (or use extra_hosts on Linux).
-- Also scrape prometheus itself.
+4) Documentation updates:
+   - Update docs (README or observability-local.md) explaining METRICS_TOKEN + X-Metrics-Token behavior.
+   - Provide example commands for PowerShell and curl:
+     - curl -H "X-Metrics-Token: ..." http://localhost:3001/metrics
+     - Invoke-WebRequest with headers (and mention -UseBasicParsing or using Invoke-RestMethod to avoid parsing warnings).
 
-3) Grafana provisioning (datasource + dashboards)
-- Directory: observability/grafana/provisioning/
-  - datasources/datasource.yml
-  - dashboards/dashboards.yml
-- Datasource:
-  - name: Prometheus
-  - type: prometheus
-  - url: http://prometheus:9090
-  - isDefault: true
-- Dashboards provisioning:
-  - point to observability/grafana/dashboards/*.json
-
-4) Grafana dashboard JSON (minimal but useful)
-- File: observability/grafana/dashboards/saas-orders-api.json
-- Create ONE dashboard with panels for:
-  A) RPS global:
-     Query: sum(rate(http_requests_total[1m]))
-  B) RPS per route (top routes):
-     Query: topk(10, sum by (route) (rate(http_requests_total[1m])))
-  C) Error rate 5xx (global):
-     Query: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))
-  D) Error rate 4xx (global) (optional but recommended):
-     Query: sum(rate(http_requests_total{status=~"4.."}[5m])) / sum(rate(http_requests_total[5m]))
-  E) Latency p95 by route:
-     Query: histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_ms_bucket[5m])))
-  F) Latency p99 by route:
-     Query: histogram_quantile(0.99, sum by (le, route) (rate(http_request_duration_ms_bucket[5m])))
-  G) Payments: SUCCEEDED rate:
-     Query: sum(rate(payment_requests_total{status="SUCCEEDED"}[5m]))
-  H) Payments: FAILED rate:
-     Query: sum(rate(payment_requests_total{status="FAILED"}[5m]))
-  I) Payment idempotent replays rate:
-     Query: sum(rate(payment_idempotent_replay_total[5m]))
-  J) Outbox pending gauge:
-     Query: outbox_pending_count
-  K) Outbox processed rate:
-     If outbox_events_total exists with labels, prefer:
-       sum(rate(outbox_events_total[5m]))
-     Otherwise, document that it’s not available and leave the panel hidden or omit.
-
-Dashboard quality requirements:
-- Titles for panels must be clear.
-- Units:
-  - RPS: requests/sec
-  - error rate: percent
-  - latency: milliseconds (if the histogram is in ms; otherwise adjust)
-- Use dashboard variables (optional) like route if easy, but not required.
-- Ensure it loads automatically on Grafana startup via provisioning.
-
-5) README updates
-- Add a new section:
-  ## Observability (local)
-  - Explain what /metrics is
-  - How to run:
-    - Start API: npm run dev
-    - Start stack: docker compose -f docker-compose.observability.yml up -d
-  - Access:
-    - Prometheus http://localhost:9090
-    - Grafana http://localhost:3000 (credentials)
-  - Troubleshooting:
-    - Windows: host.docker.internal should work.
-    - Linux: either run API in docker or set extra_hosts / use host network (mention briefly).
-  - Mention that /metrics may be left unprotected locally but should be protected in prod (reverse proxy, auth, IP allowlist).
-
-6) Optional: “metrics smoke test” in Vitest
-- Create test file: tests/metrics.test.ts
-- It should:
-  - build app
-  - call GET /metrics
-  - assert status 200
-  - assert body includes at least:
-    - "http_requests_total"
-    - "http_request_duration_ms"
-    - "outbox_pending_count"
-  - then call GET /health or another endpoint and re-fetch /metrics to ensure counters change:
-    - e.g. after hitting /health, expect metrics contains a line with route="/health" and method="GET"
-- Keep it robust (avoid flakiness): just check substring presence.
+Implementation hints:
+- Prefer implementing token check inside the /metrics route handler or a tiny preHandler that only applies to /metrics.
+- Keep metrics registry singleton (avoid double registration in tests).
+- Ensure buildApp() can be created multiple times in tests without prom-client registry collisions (use a dedicated Registry or clear register in teardown).
 
 Acceptance criteria:
-- Running:
-  - npm run dev
-  - docker compose -f docker-compose.observability.yml up -d
-  Then:
-  - Prometheus shows target "saas-orders-api" UP
-  - Grafana auto-provisions datasource and dashboard (no manual setup)
-  - Dashboard panels show data after making API requests
-- README has clear instructions.
-- Lint/test still pass.
-
-Implementation notes:
-- Ensure docker-compose YAML uses correct syntax (no deprecated version field).
-- Keep paths consistent with repo structure.
-- If http_request_duration_ms_bucket is in seconds instead of ms, adjust panel unit and queries accordingly and document it.
+- npm run lint, npm run typecheck, npm run test all pass.
+- /metrics security works exactly as described.
+- 404 route cardinality is constant (“unmatched”), not raw URL.
+- Tests cover the new behaviors.
