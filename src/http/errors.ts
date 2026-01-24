@@ -4,7 +4,9 @@ export type ApiErrorCode =
 	| "FORBIDDEN"
 	| "NOT_FOUND"
 	| "CONFLICT"
-	| "INTERNAL_SERVER_ERROR";
+	| "VALIDATION_ERROR"
+	| "RATE_LIMITED"
+	| "INTERNAL_ERROR";
 
 export class ApiError extends Error {
 	constructor(
@@ -25,3 +27,19 @@ export const notFound = (message = "Resource not found") =>
 
 export const conflict = (message: string, details?: unknown) =>
 	new ApiError(409, "CONFLICT", message, details);
+
+export const unauthorized = (message = "Unauthorized") =>
+	new ApiError(401, "UNAUTHORIZED", message);
+
+export const forbidden = (message = "Forbidden") =>
+	new ApiError(403, "FORBIDDEN", message);
+
+export const validationError = (
+	message = "Validation error",
+	details?: unknown,
+) => new ApiError(422, "VALIDATION_ERROR", message, details);
+
+export const tooManyRequests = (
+	message = "Too many requests",
+	details?: unknown,
+) => new ApiError(429, "RATE_LIMITED", message, details);

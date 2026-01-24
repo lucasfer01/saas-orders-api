@@ -1,11 +1,19 @@
+import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
-import { notFound } from "../../http/errors.js";
+import { badRequest, notFound } from "../../http/errors.js";
 import {
 	CreateProductBody,
 	ListProductsQuery,
 	ProductIdParams,
 	UpdateProductBody,
 } from "./schemas.js";
+
+type AuthContext = NonNullable<FastifyRequest["auth"]>;
+function getAuth(req: FastifyRequest): AuthContext {
+	const auth = req.auth;
+	if (!auth) throw badRequest("Missing auth context");
+	return auth;
+}
 
 export const productsRoutes: FastifyPluginAsync = async (app) => {
 	// Protege todo el módulo
@@ -18,7 +26,7 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 		"/products",
 		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
 		async (req, reply) => {
-			const { tenantId } = (req as any).auth;
+			const { tenantId } = getAuth(req);
 			const body = CreateProductBody.parse(req.body);
 
 			const product = await app.prisma.product.create({
@@ -43,27 +51,62 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 	);
 
 	// GET /products (ADMIN|MANAGER|STAFF)
-	app.get("/products", async (req) => {
-		const { tenantId } = (req as any).auth;
-		const q = ListProductsQuery.parse(req.query);
+	app.get(
+		"/products",
+		{
+			preHandler: async (req) =>
+				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
+		},
+		async (req) => {
+			const { tenantId } = getAuth(req);
+			const q = ListProductsQuery.parse(req.query);
 
-		const where = {
-			tenantId,
-			...(q.active !== undefined ? { active: q.active } : {}),
-			...(q.search
-				? { name: { contains: q.search, mode: "insensitive" as const } }
-				: {}),
-		};
+			const where = {
+				tenantId,
+				...(q.active !== undefined ? { active: q.active } : {}),
+				...(q.search
+					? { name: { contains: q.search, mode: "insensitive" as const } }
+					: {}),
+			};
 
-		const skip = (q.page - 1) * q.pageSize;
-		const take = q.pageSize;
+			const skip = (q.page - 1) * q.pageSize;
+			const take = q.pageSize;
 
-		const [items, total] = await Promise.all([
-			app.prisma.product.findMany({
-				where,
-				orderBy: { createdAt: "desc" },
-				skip,
-				take,
+			const [items, total] = await Promise.all([
+				app.prisma.product.findMany({
+					where,
+					orderBy: { createdAt: "desc" },
+					skip,
+					take,
+					select: {
+						id: true,
+						tenantId: true,
+						name: true,
+						priceCents: true,
+						active: true,
+						createdAt: true,
+					},
+				}),
+				app.prisma.product.count({ where }),
+			]);
+
+			return { page: q.page, pageSize: q.pageSize, total, items };
+		},
+	);
+
+	// GET /products/:id (ADMIN|MANAGER|STAFF)
+	app.get(
+		"/products/:id",
+		{
+			preHandler: async (req) =>
+				app.requireRole(["ADMIN", "MANAGER", "STAFF"])(req),
+		},
+		async (req) => {
+			const { tenantId } = getAuth(req);
+			const { id } = ProductIdParams.parse(req.params);
+
+			const product = await app.prisma.product.findFirst({
+				where: { id, tenantId },
 				select: {
 					id: true,
 					tenantId: true,
@@ -72,40 +115,19 @@ export const productsRoutes: FastifyPluginAsync = async (app) => {
 					active: true,
 					createdAt: true,
 				},
-			}),
-			app.prisma.product.count({ where }),
-		]);
+			});
 
-		return { page: q.page, pageSize: q.pageSize, total, items };
-	});
-
-	// GET /products/:id (ADMIN|MANAGER|STAFF)
-	app.get("/products/:id", async (req) => {
-		const { tenantId } = (req as any).auth;
-		const { id } = ProductIdParams.parse(req.params);
-
-		const product = await app.prisma.product.findFirst({
-			where: { id, tenantId },
-			select: {
-				id: true,
-				tenantId: true,
-				name: true,
-				priceCents: true,
-				active: true,
-				createdAt: true,
-			},
-		});
-
-		if (!product) throw notFound("Product not found");
-		return product;
-	});
+			if (!product) throw notFound("Product not found");
+			return product;
+		},
+	);
 
 	// PATCH /products/:id (ADMIN|MANAGER)
 	app.patch(
 		"/products/:id",
 		{ preHandler: async (req) => app.requireRole(["ADMIN", "MANAGER"])(req) },
 		async (req) => {
-			const { tenantId } = (req as any).auth;
+			const { tenantId } = getAuth(req);
 			const { id } = ProductIdParams.parse(req.params);
 			const body = UpdateProductBody.parse(req.body);
 

@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+import type { FastifyRequest } from "fastify";
 import type { FastifyPluginAsync } from "fastify/types/plugin";
 import {
 	signAccessToken,
@@ -6,219 +8,288 @@ import {
 } from "../../auth/jwt.js";
 import { hashPassword, verifyPassword } from "../../auth/password.js";
 import { sha256 } from "../../auth/token-hash.js";
+import { env } from "../../config/env.js";
 import { badRequest, conflict, notFound } from "../../http/errors.js";
 import { LoginBody, RefreshBody, RegisterBody } from "./schema.js";
 
 export const authRoutes: FastifyPluginAsync = async (app) => {
+	type AuthContext = NonNullable<FastifyRequest["auth"]>;
+	function getAuth(req: FastifyRequest): AuthContext {
+		const auth = req.auth;
+		if (!auth) throw badRequest("Missing auth context");
+		return auth;
+	}
+
 	// POST /auth/register
-	app.post("/auth/register", async (req, reply) => {
-		const body = RegisterBody.parse(req.body);
-
-		const result = await app.prisma.$transaction(async (tx) => {
-			const tenant = await tx.tenant.create({
-				data: { name: body.tenantName },
-				select: { id: true, name: true, createdAt: true },
-			});
-
-			// crear rol ADMIN por tenant
-			const adminRole = await tx.role.create({
-				data: { tenantId: tenant.id, name: "ADMIN" },
-				select: { id: true, name: true },
-			});
-
-			// evitar email duplicado por tenant
-			const existing = await tx.user.findUnique({
-				where: { tenantId_email: { tenantId: tenant.id, email: body.email } },
-				select: { id: true },
-			});
-			if (existing) throw conflict("Email already exists in tenant");
-
-			const user = await tx.user.create({
-				data: {
-					tenantId: tenant.id,
-					email: body.email,
-					passwordHash: await hashPassword(body.password),
-					status: "ACTIVE",
-					roles: { create: [{ roleId: adminRole.id }] },
+	app.post(
+		"/auth/register",
+		{
+			config: {
+				rateLimit: {
+					max: env.RATE_LIMIT_REGISTER_MAX,
+					timeWindow: env.RATE_LIMIT_REGISTER_TIME_WINDOW,
+					keyGenerator: (req: FastifyRequest) => req.ip,
 				},
-				select: { id: true, email: true },
+			},
+		},
+		async (req, reply) => {
+			const body = RegisterBody.parse(req.body);
+
+			const result = await app.prisma.$transaction(
+				async (tx: Prisma.TransactionClient) => {
+					const tenant = await tx.tenant.create({
+						data: { name: body.tenantName },
+						select: { id: true, name: true, createdAt: true },
+					});
+
+					// crear rol ADMIN por tenant
+					const adminRole = await tx.role.create({
+						data: { tenantId: tenant.id, name: "ADMIN" },
+						select: { id: true, name: true },
+					});
+
+					// evitar email duplicado por tenant
+					const existing = await tx.user.findUnique({
+						where: {
+							tenantId_email: { tenantId: tenant.id, email: body.email },
+						},
+						select: { id: true },
+					});
+					if (existing) throw conflict("Email already exists in tenant");
+
+					const user = await tx.user.create({
+						data: {
+							tenantId: tenant.id,
+							email: body.email,
+							passwordHash: await hashPassword(body.password),
+							status: "ACTIVE",
+							roles: { create: [{ roleId: adminRole.id }] },
+						},
+						select: { id: true, email: true },
+					});
+
+					return { tenant, user, roles: ["ADMIN"] };
+				},
+			);
+
+			// Crear refresh token (DB + JWT)
+			const refreshRow = await app.prisma.refreshToken.create({
+				data: {
+					userId: result.user.id,
+					tokenHash: "pending", // se setea después
+					expiresAt: new Date(
+						Date.now() +
+							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86_400_000,
+					),
+				},
+				select: { id: true, expiresAt: true },
 			});
 
-			return { tenant, user, roles: ["ADMIN"] };
-		});
+			// Log de evento clave (sin secretos)
+			app.log.info(
+				{ tenantId: result.tenant.id, userId: result.user.id },
+				"auth register success",
+			);
 
-		// Crear refresh token (DB + JWT)
-		const refreshRow = await app.prisma.refreshToken.create({
-			data: {
-				userId: result.user.id,
-				tokenHash: "pending", // se setea después
-				expiresAt: new Date(
-					Date.now() +
-						Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86400_000,
-				),
-			},
-			select: { id: true, expiresAt: true },
-		});
+			const refreshToken = signRefreshToken({
+				sub: result.user.id,
+				tenantId: result.tenant.id,
+				tokenId: refreshRow.id,
+			});
 
-		const refreshToken = signRefreshToken({
-			sub: result.user.id,
-			tenantId: result.tenant.id,
-			tokenId: refreshRow.id,
-		});
+			await app.prisma.refreshToken.update({
+				where: { id: refreshRow.id },
+				data: { tokenHash: sha256(refreshToken) },
+			});
 
-		await app.prisma.refreshToken.update({
-			where: { id: refreshRow.id },
-			data: { tokenHash: sha256(refreshToken) },
-		});
+			const accessToken = signAccessToken({
+				sub: result.user.id,
+				tenantId: result.tenant.id,
+				roles: result.roles,
+			});
 
-		const accessToken = signAccessToken({
-			sub: result.user.id,
-			tenantId: result.tenant.id,
-			roles: result.roles,
-		});
-
-		return reply.status(201).send({
-			tenant: result.tenant,
-			user: result.user,
-			accessToken,
-			refreshToken,
-		});
-	});
+			return reply.status(201).send({
+				tenant: result.tenant,
+				user: result.user,
+				accessToken,
+				refreshToken,
+			});
+		},
+	);
 
 	// POST /auth/login
-	app.post("/auth/login", async (req) => {
-		const body = LoginBody.parse(req.body);
-
-		const user = await app.prisma.user.findFirst({
-			where: { tenantId: body.tenantId, email: body.email, status: "ACTIVE" },
-			select: {
-				id: true,
-				tenantId: true,
-				email: true,
-				passwordHash: true,
-				roles: { select: { role: { select: { name: true } } } },
+	app.post(
+		"/auth/login",
+		{
+			config: {
+				rateLimit: {
+					max: env.RATE_LIMIT_LOGIN_MAX,
+					timeWindow: env.RATE_LIMIT_LOGIN_TIME_WINDOW,
+					keyGenerator: (req: FastifyRequest) => req.ip,
+				},
 			},
-		});
+		},
+		async (req) => {
+			const body = LoginBody.parse(req.body);
 
-		if (!user) throw notFound("Invalid credentials");
+			const user = await app.prisma.user.findFirst({
+				where: { tenantId: body.tenantId, email: body.email, status: "ACTIVE" },
+				select: {
+					id: true,
+					tenantId: true,
+					email: true,
+					passwordHash: true,
+					roles: { select: { role: { select: { name: true } } } },
+				},
+			});
 
-		const ok = await verifyPassword(body.password, user.passwordHash);
-		if (!ok) throw notFound("Invalid credentials");
+			if (!user) throw notFound("Invalid credentials");
 
-		const roles = user.roles.map((r) => r.role.name);
+			const ok = await verifyPassword(body.password, user.passwordHash);
+			if (!ok) throw notFound("Invalid credentials");
 
-		const refreshRow = await app.prisma.refreshToken.create({
-			data: {
-				userId: user.id,
-				tokenHash: "pending",
-				expiresAt: new Date(
-					Date.now() +
-						Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86400_000,
-				),
-			},
-			select: { id: true },
-		});
+			type RoleNameRow = { role: { name: string } };
+			const roles = user.roles.map((r: RoleNameRow) => r.role.name);
 
-		const refreshToken = signRefreshToken({
-			sub: user.id,
-			tenantId: user.tenantId,
-			tokenId: refreshRow.id,
-		});
+			const refreshRow = await app.prisma.refreshToken.create({
+				data: {
+					userId: user.id,
+					tokenHash: "pending",
+					expiresAt: new Date(
+						Date.now() +
+							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86_400_000,
+					),
+				},
+				select: { id: true },
+			});
 
-		await app.prisma.refreshToken.update({
-			where: { id: refreshRow.id },
-			data: { tokenHash: sha256(refreshToken) },
-		});
+			const refreshToken = signRefreshToken({
+				sub: user.id,
+				tenantId: user.tenantId,
+				tokenId: refreshRow.id,
+			});
 
-		const accessToken = signAccessToken({
-			sub: user.id,
-			tenantId: user.tenantId,
-			roles,
-		});
+			await app.prisma.refreshToken.update({
+				where: { id: refreshRow.id },
+				data: { tokenHash: sha256(refreshToken) },
+			});
 
-		return { accessToken, refreshToken };
-	});
+			const accessToken = signAccessToken({
+				sub: user.id,
+				tenantId: user.tenantId,
+				roles,
+			});
+
+			// Log de evento clave (sin secretos)
+			app.log.info(
+				{ tenantId: user.tenantId, userId: user.id },
+				"auth login success",
+			);
+
+			return { accessToken, refreshToken };
+		},
+	);
 
 	// POST /auth/refresh (rotación)
-	app.post("/auth/refresh", async (req) => {
-		const body = RefreshBody.parse(req.body);
-
-		let payload: { tokenId: string };
-		try {
-			payload = verifyRefreshToken(body.refreshToken);
-		} catch {
-			throw badRequest("Invalid refresh token");
-		}
-
-		const tokenHash = sha256(body.refreshToken);
-
-		const row = await app.prisma.refreshToken.findUnique({
-			where: { id: payload.tokenId },
-			select: {
-				id: true,
-				userId: true,
-				tokenHash: true,
-				expiresAt: true,
-				revokedAt: true,
+	app.post(
+		"/auth/refresh",
+		{
+			config: {
+				rateLimit: {
+					max: env.RATE_LIMIT_REFRESH_MAX,
+					timeWindow: env.RATE_LIMIT_REFRESH_TIME_WINDOW,
+					keyGenerator: (req: FastifyRequest) => req.ip,
+				},
 			},
-		});
+		},
+		async (req) => {
+			const body = RefreshBody.parse(req.body);
 
-		if (!row) throw badRequest("Refresh token not found");
-		if (row.revokedAt) throw badRequest("Refresh token revoked");
-		if (row.expiresAt.getTime() < Date.now())
-			throw badRequest("Refresh token expired");
-		if (row.tokenHash !== tokenHash) throw badRequest("Refresh token mismatch");
+			let payload: { tokenId: string };
+			try {
+				payload = verifyRefreshToken(body.refreshToken);
+			} catch {
+				throw badRequest("Invalid refresh token");
+			}
 
-		// Obtener roles actuales del usuario
-		const user = await app.prisma.user.findUnique({
-			where: { id: row.userId },
-			select: {
-				id: true,
-				tenantId: true,
-				status: true,
-				roles: { select: { role: { select: { name: true } } } },
-			},
-		});
-		if (!user || user.status !== "ACTIVE") throw badRequest("User inactive");
-		const roles = user.roles.map((r) => r.role.name);
+			const tokenHash = sha256(body.refreshToken);
 
-		// Rotar: revocar token anterior y emitir nuevo
-		await app.prisma.refreshToken.update({
-			where: { id: row.id },
-			data: { revokedAt: new Date() },
-		});
+			const row = await app.prisma.refreshToken.findUnique({
+				where: { id: payload.tokenId },
+				select: {
+					id: true,
+					userId: true,
+					tokenHash: true,
+					expiresAt: true,
+					revokedAt: true,
+				},
+			});
 
-		const newRow = await app.prisma.refreshToken.create({
-			data: {
-				userId: user.id,
-				tokenHash: "pending",
-				expiresAt: new Date(
-					Date.now() +
-						Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86400_000,
-				),
-			},
-			select: { id: true },
-		});
+			if (!row) throw badRequest("Refresh token not found");
+			if (row.revokedAt) throw badRequest("Refresh token revoked");
+			if (row.expiresAt.getTime() < Date.now())
+				throw badRequest("Refresh token expired");
+			if (row.tokenHash !== tokenHash)
+				throw badRequest("Refresh token mismatch");
 
-		const newRefreshToken = signRefreshToken({
-			sub: user.id,
-			tenantId: user.tenantId,
-			tokenId: newRow.id,
-		});
+			// Obtener roles actuales del usuario
+			const user = await app.prisma.user.findUnique({
+				where: { id: row.userId },
+				select: {
+					id: true,
+					tenantId: true,
+					status: true,
+					roles: { select: { role: { select: { name: true } } } },
+				},
+			});
+			if (!user || user.status !== "ACTIVE") throw badRequest("User inactive");
+			type RoleNameRow = { role: { name: string } };
+			const roles = user.roles.map((r: RoleNameRow) => r.role.name);
 
-		await app.prisma.refreshToken.update({
-			where: { id: newRow.id },
-			data: { tokenHash: sha256(newRefreshToken) },
-		});
+			// Rotar: revocar token anterior y emitir nuevo
+			await app.prisma.refreshToken.update({
+				where: { id: row.id },
+				data: { revokedAt: new Date() },
+			});
 
-		const newAccessToken = signAccessToken({
-			sub: user.id,
-			tenantId: user.tenantId,
-			roles,
-		});
+			const newRow = await app.prisma.refreshToken.create({
+				data: {
+					userId: user.id,
+					tokenHash: "pending",
+					expiresAt: new Date(
+						Date.now() +
+							Number(process.env.JWT_REFRESH_TTL_DAYS ?? 14) * 86_400_000,
+					),
+				},
+				select: { id: true },
+			});
 
-		return { accessToken: newAccessToken, refreshToken: newRefreshToken };
-	});
+			const newRefreshToken = signRefreshToken({
+				sub: user.id,
+				tenantId: user.tenantId,
+				tokenId: newRow.id,
+			});
+
+			await app.prisma.refreshToken.update({
+				where: { id: newRow.id },
+				data: { tokenHash: sha256(newRefreshToken) },
+			});
+
+			const newAccessToken = signAccessToken({
+				sub: user.id,
+				tenantId: user.tenantId,
+				roles,
+			});
+
+			// Log de evento clave (sin secretos)
+			app.log.info(
+				{ tenantId: user.tenantId, userId: user.id },
+				"auth refresh success",
+			);
+
+			return { accessToken: newAccessToken, refreshToken: newRefreshToken };
+		},
+	);
 
 	// POST /auth/logout (revoca el refresh actual)
 	app.post("/auth/logout", async (req) => {
@@ -229,6 +300,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 			payload = verifyRefreshToken(body.refreshToken);
 		} catch {
 			// logout idempotente
+			app.log.info({}, "auth logout idempotent");
 			return { ok: true };
 		}
 
@@ -236,6 +308,8 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 			where: { id: payload.tokenId, revokedAt: null },
 			data: { revokedAt: new Date() },
 		});
+
+		app.log.info({}, "auth logout success");
 
 		return { ok: true };
 	});
@@ -245,7 +319,7 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 		"/me",
 		{ preHandler: async (req) => app.requireAuth(req) },
 		async (req) => {
-			const auth = (req as any).auth;
+			const auth = getAuth(req);
 
 			const user = await app.prisma.user.findUnique({
 				where: { id: auth.userId },
@@ -260,12 +334,13 @@ export const authRoutes: FastifyPluginAsync = async (app) => {
 
 			if (!user) throw notFound("User not found");
 
+			type RoleNameRow = { role: { name: string } };
 			return {
 				id: user.id,
 				email: user.email,
 				tenantId: user.tenantId,
 				status: user.status,
-				roles: user.roles.map((r) => r.role.name),
+				roles: user.roles.map((r: RoleNameRow) => r.role.name),
 			};
 		},
 	);

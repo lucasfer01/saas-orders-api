@@ -10,7 +10,8 @@
 		"skipLibCheck": true,
 		"types": ["node"],
 		"resolveJsonModule": true,
-		"noEmitOnError": true
+		"noEmitOnError": true,
+		"sourceMap": true
 	},
 	"include": ["src", "prisma", "types/*.d.ts"]
 }
