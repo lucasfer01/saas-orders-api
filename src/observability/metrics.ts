@@ -1,3 +1,15 @@
+// Receipts metrics
+export const receiptIssuedTotal = new promClient.Counter({
+	name: "receipt_issued_total",
+	help: "Total receipts issued",
+	labelNames: ["tenantId"] as const,
+});
+export const receiptVoidedTotal = new promClient.Counter({
+	name: "receipt_voided_total",
+	help: "Total receipts voided",
+	labelNames: ["tenantId"] as const,
+});
+
 import type { FastifyPluginAsync, FastifyRequest } from "fastify";
 import fp from "fastify-plugin";
 import promClient from "prom-client";
@@ -45,8 +57,11 @@ register.registerMetric(httpRequestsTotal);
 register.registerMetric(httpRequestDuration);
 register.registerMetric(outboxEventsTotal);
 register.registerMetric(outboxPendingCount);
+
 register.registerMetric(paymentRequestsTotal);
 register.registerMetric(paymentIdempotentReplayTotal);
+register.registerMetric(receiptIssuedTotal);
+register.registerMetric(receiptVoidedTotal);
 
 function routeLabel(req: FastifyRequest) {
 	// Si la respuesta será 404, devolver 'unmatched' como label

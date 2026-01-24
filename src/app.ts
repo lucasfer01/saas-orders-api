@@ -16,6 +16,7 @@ import { metricsPlugin } from "./observability/metrics.js";
 import { prismaPlugin } from "./plugins/prisma.js";
 import { redisPlugin } from "./plugins/redis.js";
 import { healthRoutes } from "./routes/health.js";
+import receiptsRoutes from "./modules/receipts/routes.js";
 
 export function buildApp() {
 	const app = Fastify({
@@ -133,7 +134,9 @@ export function buildApp() {
 
 	app.register(productsRoutes);
 
+
 	app.register(ordersRoutes);
+	app.register(receiptsRoutes);
 
 	app.register(paymentsRoutes);
 

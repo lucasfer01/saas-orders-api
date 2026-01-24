@@ -1,54 +1,135 @@
-Act as a senior backend engineer. We have a Fastify + TypeScript + Prisma API with Prometheus metrics exposed at GET /metrics using prom-client. We also have structured logging, outbox worker with Redis lock, and payments idempotency metrics.
+Actuá como senior backend engineer. Estoy en un repo llamado "saas-orders-api" (Node.js + TypeScript + Fastify v5 + Prisma v7 + Postgres + Redis). Ya existen módulos: auth, products, orders, payments, outbox, hardening, observability (/metrics prom-client). Errores estandarizados: { error: { code, message, details? } }. Multi-tenancy: tenantId viene SIEMPRE del access token (req.auth.tenantId). RBAC: app.requireAuth / app.requireRole.
 
-Goal (this module): “Observability hardening v1.1” focused on securing /metrics for production, preventing Prometheus label cardinality explosions, and adding integration tests to prove correct behavior.
+Objetivo: Implementar un módulo nuevo "receipts" (recibos/facturas internas) completamente tenant-scoped, transaccional, con idempotencia y numeración incremental por tenant.
 
-Constraints / context:
-- Fastify v5 app with modular plugins and modules (src/app.ts composes plugins + routes).
-- Observability files exist under src/observability/* (logger, metrics, tracing).
-- Metrics currently include: http_requests_total{method,route,status}, http_request_duration_ms histogram, outbox metrics, payment metrics.
-- Local docs say /metrics may be unprotected locally; in prod we want METRICS_TOKEN and X-Metrics-Token header.
-- Keep error responses standardized: { error: { code, message, details? } }.
-- Tests use Vitest with app.inject (integration style). CI runs tests.
+REGLAS IMPORTANTES:
+- No usar `any`.
+- Toda query de dominio debe filtrar por tenantId.
+- Mutaciones críticas deben ser transaccionales con prisma.$transaction.
+- Mantener el estilo del repo: Zod para validación, rutas en src/modules/<domain>/routes.ts, helpers/queries en archivos del módulo si corresponde.
+- Respetar el hardening ya existente (rate limit opcional, headers etc).
+- Respuestas de error deben usar los helpers existentes (unauthorized/forbidden/notFound/badRequest/conflict/validation etc), manteniendo el shape estándar.
+- Si ya existe un receipt para una orden, devolver el mismo receipt (idempotencia).
 
-Deliverables:
-1) Secure /metrics with optional token:
-   - If env METRICS_TOKEN is NOT set: /metrics is public (current behavior).
-   - If env METRICS_TOKEN IS set:
-     - Require header X-Metrics-Token to match METRICS_TOKEN.
-     - If missing/invalid -> 401 with standardized body:
-       { error: { code: "UNAUTHORIZED", message: "Unauthorized" } }
-   - Do NOT require JWT auth for /metrics.
-   - Ensure response content-type remains Prometheus text format and body remains the metrics output.
+FUNCIONALIDADES A IMPLEMENTAR:
 
-2) Prevent high-cardinality “route” labels:
-   - For matched routes, label must be Fastify routerPath / routeOptions.url (e.g. "/orders/:id/payments"), not raw req.url.
-   - For unmatched routes (404), set route label to a constant like "unmatched" (NOT the raw URL path).
-   - Make sure metrics still record status codes for 404s.
+A) Prisma schema + migration
+1) Agregar modelos:
+- Receipt:
+  - id: String @id @default(cuid())
+  - tenantId: String
+  - orderId: String
+  - number: Int (secuencial por tenant)
+  - status: enum ReceiptStatus { ISSUED, VOIDED }
+  - currency: String (default "USD" o configurable)
+  - subtotalCents: Int
+  - taxCents: Int @default(0)
+  - totalCents: Int
+  - issuedAt: DateTime @default(now())
+  - voidedAt: DateTime?
+  - voidReason: String?
+  - createdAt: DateTime @default(now())
+  - updatedAt: DateTime @updatedAt
+  - items: ReceiptItem[]
+  - order: relation opcional con Order (fields: [orderId], references: [id])
+  - indexes/unique:
+    - @@unique([tenantId, orderId])  // idempotencia por orden
+    - @@unique([tenantId, number])   // número único por tenant
+    - @@index([tenantId, issuedAt])
 
-3) Tests (create a new test file tests/observability.test.ts or similar):
-   - Test A: GET /metrics returns 200 and contains at least one of each core metric names:
-     http_requests_total, http_request_duration_ms, payment_requests_total, payment_idempotent_replay_total.
-   - Test B: When METRICS_TOKEN is set (set process.env in test before buildApp()):
-     - GET /metrics without header => 401 and standardized error body.
-     - GET /metrics with X-Metrics-Token correct => 200.
-   - Test C: Trigger a 404 by requesting GET /does-not-exist and then GET /metrics:
-     - Assert there is a http_requests_total sample for status="404" and route="unmatched" (or whatever constant you chose).
-     - Confirm it does NOT include raw path "/does-not-exist" as a route label.
-   - Keep tests deterministic and fast.
+- ReceiptItem:
+  - id: String @id @default(cuid())
+  - tenantId: String
+  - receiptId: String
+  - productId: String? (opcional)
+  - name: String (snapshot)
+  - unitPriceCents: Int (snapshot)
+  - qty: Int
+  - lineTotalCents: Int
+  - createdAt: DateTime @default(now())
+  - receipt: relation (fields: [receiptId], references: [id], onDelete: Cascade)
+  - @@index([tenantId, receiptId])
 
-4) Documentation updates:
-   - Update docs (README or observability-local.md) explaining METRICS_TOKEN + X-Metrics-Token behavior.
-   - Provide example commands for PowerShell and curl:
-     - curl -H "X-Metrics-Token: ..." http://localhost:3001/metrics
-     - Invoke-WebRequest with headers (and mention -UseBasicParsing or using Invoke-RestMethod to avoid parsing warnings).
+2) Agregar/usar un contador por tenant para numeración:
+- Si ya tenés algo similar para orders, reutilizarlo.
+- Si no existe, crear modelo TenantCounter:
+  - tenantId: String
+  - key: String  // e.g. "RECEIPT"
+  - value: Int @default(0)
+  - @@unique([tenantId, key])
 
-Implementation hints:
-- Prefer implementing token check inside the /metrics route handler or a tiny preHandler that only applies to /metrics.
-- Keep metrics registry singleton (avoid double registration in tests).
-- Ensure buildApp() can be created multiple times in tests without prom-client registry collisions (use a dedicated Registry or clear register in teardown).
+La emisión de receipt debe obtener el próximo número de forma segura en concurrencia dentro de la transacción:
+- upsert counter (value=0)
+- update counter con increment: 1 y usar el value resultante como receipt.number
 
-Acceptance criteria:
-- npm run lint, npm run typecheck, npm run test all pass.
-- /metrics security works exactly as described.
-- 404 route cardinality is constant (“unmatched”), not raw URL.
-- Tests cover the new behaviors.
+B) Endpoints (Fastify routes)
+Implementar en src/modules/receipts/routes.ts y registrarlo desde el router principal.
+
+1) POST /orders/:id/receipt  (ADMIN|MANAGER)
+- Requiere order existente del tenant.
+- Regla: sólo emitir si order.status === "PAID".
+- Idempotencia:
+  - si ya existe Receipt para (tenantId, orderId), devolverlo con status 200.
+  - si no existe, crear Receipt + ReceiptItem[] snapshot de OrderItem.
+- Snapshot:
+  - receipt.subtotalCents = order.subtotalCents
+  - receipt.totalCents = order.totalCents
+  - receipt.taxCents = 0 por ahora (dejar campo preparado)
+  - receipt.items: por cada OrderItem guardar name, unitPriceCents, qty, lineTotalCents, productId si existe.
+- Transacción:
+  - dentro del prisma.$transaction: validar order, generar number, crear receipt, crear items, insertar OutboxEvent type="RECEIPT_ISSUED" status PENDING (si tu outbox ya existe).
+- Respuesta: receipt con items (incluyendo number, status, issuedAt, totals).
+
+2) GET /orders/:id/receipt (ADMIN|MANAGER|STAFF)
+- Devuelve receipt del order (404 si no existe o no pertenece al tenant).
+- Incluir items.
+
+3) GET /receipts/:id (ADMIN|MANAGER|STAFF)
+- Tenant-scoped.
+- Incluir items.
+
+4) GET /receipts?page=&pageSize=&from=&to= (ADMIN|MANAGER|STAFF)
+- Paginación consistente con el módulo orders.
+- Filtros opcionales por rango de fechas (issuedAt).
+- Orden: issuedAt desc.
+- Respuesta: { total, items, page, pageSize }.
+
+5) (Opcional recomendado) POST /receipts/:id/void (ADMIN|MANAGER)
+- Body: { reason: string }
+- Marca status=VOIDED, voidedAt=now, voidReason.
+- No borrar filas.
+- Idempotente: si ya estaba VOIDED, devolver 200 con receipt.
+- (Opcional) OutboxEvent type="RECEIPT_VOIDED".
+
+C) Observabilidad (prom-client)
+- Incrementar counter `receipt_issued_total` cuando se emite (sólo en creación, no en replay idempotente).
+- Incrementar `receipt_voided_total` cuando se void (sólo primera vez).
+
+D) Tests (Vitest integración)
+Crear tests/receipts.test.ts (o ampliar tests existentes) usando app.inject:
+1) Setup: register -> token -> crear product -> crear order -> add item -> set status OPEN -> pay -> order PAID.
+2) Emite receipt OK:
+   - POST /orders/:id/receipt => 201 o 200 (si decidís) pero consistente.
+   - validar que receipt.tenantId == tenantId, receipt.orderId == orderId, items length > 0, totals correctos, number es Int.
+3) Bloqueo por estado:
+   - Crear otra order NO PAID y POST /orders/:id/receipt => 400 (o 409) con code semántico (BAD_REQUEST/CONFLICT).
+4) Idempotencia:
+   - Llamar 2 veces POST /orders/:id/receipt => mismos id/number, y metric idempotency no crea duplicados (si validable desde DB).
+5) Tenant isolation:
+   - Crear segundo tenant, intentar GET receipt del primero => 404.
+6) (Si void implementado) void:
+   - POST /receipts/:id/void => status VOIDED y voidedAt existe.
+   - Repetir void => idempotente.
+
+E) Documentación
+- Actualizar README: agregar sección "Receipts" en endpoints y reglas.
+- Si existe colección Postman o docs, agregar ejemplos de request/response.
+
+Criterio de aceptación final:
+- npm run typecheck OK
+- npm run lint OK
+- npm run test OK
+- Endpoints funcionan en Postman.
+- No se usan `any`.
+- Todo tenant-scoped.
+- Outbox event creado al emitir (y opcional al void).
