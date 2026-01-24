@@ -205,3 +205,33 @@ OTEL_ENABLED=false
 
 # Outbox worker
 OUTBOX_MAX_ATTEMPTS=5
+
+# Seguridad en /metrics
+# METRICS_TOKEN="<tu_token>"
+```
+
+## Seguridad en /metrics (producción)
+
+- Si la variable de entorno `METRICS_TOKEN` **no está definida**, `/metrics` es público (solo recomendado para desarrollo local).
+- Si `METRICS_TOKEN` **está definida**, se requiere el header `X-Metrics-Token` con el valor correspondiente para acceder a `/metrics`.
+- Si el token es inválido o falta, la API responde con 401 y body estandarizado:
+  ```json
+  { "error": { "code": "UNAUTHORIZED", "message": "Unauthorized" } }
+  ```
+- El endpoint `/metrics` nunca requiere JWT ni otro tipo de autenticación.
+
+#### Ejemplos de consulta a /metrics
+
+- **curl:**
+  ```sh
+  curl -H "X-Metrics-Token: <tu_token>" http://localhost:3001/metrics
+  ```
+- **PowerShell:**
+  ```powershell
+  Invoke-WebRequest -Uri "http://localhost:3001/metrics" -Headers @{"X-Metrics-Token" = "<tu_token>"} -UseBasicParsing
+  # O usando Invoke-RestMethod para evitar warnings de parsing
+  Invoke-RestMethod -Uri "http://localhost:3001/metrics" -Headers @{"X-Metrics-Token" = "<tu_token>"}
+  ```
+
+- El response mantiene el formato Prometheus estándar.
+- Para pruebas locales, podés dejar `METRICS_TOKEN` sin definir para acceso libre.

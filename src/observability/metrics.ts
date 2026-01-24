@@ -49,18 +49,28 @@ register.registerMetric(paymentRequestsTotal);
 register.registerMetric(paymentIdempotentReplayTotal);
 
 function routeLabel(req: FastifyRequest) {
-	return (
-		(req as FastifyRequest & { routerPath?: string }).routerPath ||
-		req.routeOptions?.url ||
-		req.url
-	);
+	// Si la respuesta será 404, devolver 'unmatched' como label
+	const reply = (req as any).raw?.__metricsReply;
+	if (reply && reply.statusCode === 404) return "unmatched";
+	if ((req as FastifyRequest & { routerPath?: string }).routerPath) {
+		return (req as FastifyRequest & { routerPath?: string }).routerPath;
+	}
+	if (req.routeOptions?.url) {
+		return req.routeOptions.url;
+	}
+	return req.url;
 }
 
 const metricsPluginImpl: FastifyPluginAsync = async (app) => {
-	app.addHook("onRequest", async (req) => {
+	app.addHook("onRequest", async (req, reply) => {
+		// Guardar referencia a reply para saber el status en el label
+		(req as any).raw.__metricsReply = reply;
+		// Si la ruta no existe, usar 'unmatched' en el label del histograma
+		const is404 = reply && reply.statusCode === 404;
+		const route = is404 ? "unmatched" : routeLabel(req);
 		const end = httpRequestDuration.startTimer({
 			method: req.method,
-			route: routeLabel(req),
+			route,
 		});
 		(
 			req as FastifyRequest & {
@@ -76,24 +86,28 @@ const metricsPluginImpl: FastifyPluginAsync = async (app) => {
 			}
 		).__metricsEnd;
 		try {
+			const is404 = reply.statusCode === 404;
+			const route = is404 ? "unmatched" : routeLabel(req) || "unmatched";
 			httpRequestsTotal.inc({
 				method: req.method,
-				route: routeLabel(req),
+				route,
 				status: String(reply.statusCode),
 			});
+			if (end) end({ route }); // Forzar el label correcto en el histograma
 		} finally {
-			if (end) end({});
+			// end ya llamado arriba
 		}
 	});
 
 	app.get("/metrics", async (_req, reply) => {
 		// Protección opcional por token estático
-		if (env.METRICS_TOKEN) {
+		const METRICS_TOKEN = process.env.METRICS_TOKEN;
+		if (METRICS_TOKEN) {
 			const token = _req.headers["x-metrics-token"];
 			const tokenStr = Array.isArray(token) ? token[0] : token;
-			if (tokenStr !== env.METRICS_TOKEN) {
-				return reply.status(403).send({
-					error: { code: "FORBIDDEN", message: "Invalid metrics token" },
+			if (tokenStr !== METRICS_TOKEN) {
+				return reply.status(401).send({
+					error: { code: "UNAUTHORIZED", message: "Unauthorized" },
 				});
 			}
 		}
