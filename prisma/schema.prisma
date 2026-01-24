@@ -128,6 +128,7 @@ model Order {
   statusHistory OrderStatusHistory[]
 
   payments Payment[]
+  receipt  Receipt?
 
   @@unique([tenantId, number])
   @@index([tenantId, status])
@@ -212,7 +213,6 @@ model OutboxEvent {
   @@index([status])
   @@index([createdAt])
 }
-
 model RefreshToken {
   id        String    @id @default(cuid())
   userId    String
@@ -225,4 +225,57 @@ model RefreshToken {
 
   @@index([userId])
   @@index([expiresAt])
+}
+
+enum ReceiptStatus {
+  ISSUED
+  VOIDED
+}
+
+model Receipt {
+  id            String         @id @default(cuid())
+  tenantId      String
+  orderId       String   @unique
+  number        Int
+  status        ReceiptStatus  @default(ISSUED)
+  currency      String         @default("USD")
+  subtotalCents Int
+  taxCents      Int            @default(0)
+  totalCents    Int
+  issuedAt      DateTime       @default(now())
+  voidedAt      DateTime?
+  voidReason    String?
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  items         ReceiptItem[]
+  order         Order?         @relation(fields: [orderId], references: [id])
+
+  @@unique([tenantId, orderId])
+  @@unique([tenantId, number])
+  @@index([tenantId, issuedAt])
+}
+
+model ReceiptItem {
+  id             String   @id @default(cuid())
+  tenantId       String
+  receiptId      String
+  productId      String?
+  name           String
+  unitPriceCents Int
+  qty            Int
+  lineTotalCents Int
+  createdAt      DateTime @default(now())
+
+  receipt        Receipt  @relation(fields: [receiptId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, receiptId])
+}
+
+model TenantCounter {
+  tenantId String
+  key      String
+  value    Int     @default(0)
+
+  @@unique([tenantId, key])
 }
